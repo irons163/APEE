@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apee"
+version = "0.3.0"
+description = "A local engine for GitHub development tasks and verified review handoffs"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+apee = "apee.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["apee*"]

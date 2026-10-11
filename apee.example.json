@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "state_dir": ".apee",
+  "codex": "codex",
+  "agent_timeout_seconds": 900,
+  "command_timeout_seconds": 300,
+  "max_tasks_per_cycle": 1,
+  "daily_attempt_limit": 10,
+  "max_pr_checks_per_cycle": 20,
+  "projects": [
+    {
+      "repo": "your-account/your-project",
+      "enabled": false,
+      "priority": 1,
+      "issue_label": "apee:ready",
+      "setup": [["npm", "ci", "--ignore-scripts"]],
+      "setup_network": true,
+      "tests": [["npm", "test"]],
+      "publish_draft": true
+    }
+  ]
+}

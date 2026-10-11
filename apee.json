@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "state_dir": ".apee",
+  "codex": "codex",
+  "agent_timeout_seconds": 900,
+  "command_timeout_seconds": 300,
+  "max_tasks_per_cycle": 1,
+  "daily_attempt_limit": 10,
+  "max_pr_checks_per_cycle": 20,
+  "projects": [
+    {
+      "repo": "irons163/codex-pool-manager",
+      "enabled": true,
+      "priority": 1,
+      "issue_label": "apee:ready",
+      "tests": [
+        [
+          "bash",
+          "scripts/test_generate_sparkle_appcast.sh"
+        ],
+        [
+          "/usr/bin/python3",
+          "-B",
+          "/Users/pchang01/Documents/mygithub/APEE/pilot_checks/check_appcast_xml.py"
+        ]
+      ],
+      "setup": [],
+      "setup_network": false,
+      "publish_draft": true,
+      "allowed_paths": [
+        "scripts/generate_sparkle_appcast.sh",
+        "scripts/test_generate_sparkle_appcast.sh"
+      ]
+    }
+  ]
+}
