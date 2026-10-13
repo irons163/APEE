@@ -50,6 +50,8 @@ python3 -m apee project-add your-account/your-project \
 
 測試命令是參數陣列，不經 shell 展開。需要多個檢查時，重複使用 `--test`。專案若已有自己的環境啟動腳本，可直接將腳本設定為命令。檢查須能正確回報失敗；引擎判定的「通過」是命令結束碼為 0，不代表自動證明了所有產品行為。
 
+專案的 `tests` 與 `setup` 命令支援字面佔位符 `{config_dir}`，例如 `["/usr/bin/python3", "-B", "{config_dir}/pilot_checks/check_appcast_xml.py"]`。載入時，每個參數中的所有 `{config_dir}` 都會替換成設定檔所在目錄的絕對路徑；基準是所選設定檔，不是目前執行目錄或目標 repository 的 checkout。路徑即使含空白也仍是一個參數，不經 shell、不展開環境變數、`~` 或萬用字元；沒有佔位符的相對與絕對參數維持原值。原始 JSON 會保留佔位符，`project-add` 重寫設定時不會存入替換後的機器專屬路徑。
+
 專案可在設定中指定 `allowed_paths`，列出允許修改的完整 repository 相對檔名；超出範圍的變更會停止交付。省略此設定才允許 repository 內其他檔案。針對局部功能的測試，應搭配相同範圍的檔案限制。
 
 也可以參考 `apee.example.json` 建立 `apee.local.json`；存在時會優先使用，且此檔不納入版本控制。`--config /absolute/path/config.json` 可明確選擇設定。

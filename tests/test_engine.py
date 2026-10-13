@@ -314,6 +314,65 @@ class EngineTests(EngineFixture):
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_config_dir_commands_are_portable_and_preserve_raw_data(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root).resolve()
+            config_dir = base / "settings with spaces"
+            config_dir.mkdir()
+            checkout = base / "checkout"
+            checkout.mkdir()
+            script = config_dir / "check.py"
+            script.write_text(
+                "import json, sys\nprint(json.dumps(sys.argv[1:]))\n",
+                encoding="utf-8",
+            )
+            ordinary = ["relative/file", "/absolute/file", "$HOME", "${HOME}",
+                        "~/file", "*.py", "$(echo expanded)", "{other}"]
+            command = [sys.executable, "{config_dir}/check.py",
+                       "prefix={config_dir}|{config_dir}"] + ordinary
+            data = dict(version=1, projects=[dict(
+                repo="me/demo", enabled=True, tests=[command], setup=[command],
+            )])
+            path = config_dir / "config.json"
+            original = json.dumps(data)
+            path.write_text(original, encoding="utf-8")
+            previous_cwd = Path.cwd()
+            try:
+                for cwd in (base, checkout):
+                    with self.subTest(cwd=cwd):
+                        os.chdir(cwd)
+                        with patch.dict(os.environ, HOME="should-not-expand"):
+                            config = Config(os.path.relpath(path, cwd))
+                        expected = [sys.executable, str(script),
+                                    f"prefix={config_dir}|{config_dir}"] + ordinary
+                        project = config.project("me/demo")
+                        for key in ("tests", "setup"):
+                            self.assertEqual(project[key], [expected])
+                            result = Runner().run(project[key][0], cwd=checkout)
+                            self.assertEqual(json.loads(result), expected[2:])
+                            project[key][0].append("runtime-only")
+                        self.assertEqual(config.data, data)
+                        self.assertEqual(json.loads(json.dumps(config.data)), data)
+                        self.assertEqual(path.read_text(encoding="utf-8"), original)
+            finally:
+                os.chdir(previous_cwd)
+
+    def test_config_dir_does_not_bypass_command_validation(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "config.json"
+            for key in ("tests", "setup"):
+                for invalid in ("{config_dir}/check.py", [[]],
+                                [["{config_dir}", ""]], [["{config_dir}", 1]],
+                                [["{config_dir}\x00"]]):
+                    with self.subTest(key=key, invalid=invalid):
+                        project = dict(repo="me/demo", enabled=True, tests=[["python3"]])
+                        project[key] = invalid
+                        path.write_text(json.dumps(dict(version=1, projects=[project])))
+                        with self.assertRaises(ApeeError):
+                            Config(path)
+
     def test_enabled_repository_requires_tests(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "config.json"

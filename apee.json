@@ -21,7 +21,7 @@
         [
           "/usr/bin/python3",
           "-B",
-          "/Users/pchang01/Documents/mygithub/APEE/pilot_checks/check_appcast_xml.py"
+          "{config_dir}/pilot_checks/check_appcast_xml.py"
         ]
       ],
       "setup": [],
