@@ -89,6 +89,11 @@ class Config:
                 raise ApeeError("issue_label 必須是一個非空標籤。")
             tests = commands(item.get("tests", []), f"{name}.tests", required=enabled)
             setup = commands(item.get("setup", []), f"{name}.setup")
+            config_dir = str(self.path.parent)
+            tests = [[part.replace("{config_dir}", config_dir) for part in command]
+                     for command in tests]
+            setup = [[part.replace("{config_dir}", config_dir) for part in command]
+                     for command in setup]
             allowed = item.get("allowed_paths")
             if allowed is not None:
                 if not isinstance(allowed, list) or not allowed:
