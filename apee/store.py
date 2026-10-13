@@ -139,6 +139,13 @@ class Store:
         except BusyError:
             return True
 
+    def engine_active(self):
+        try:
+            with self.lock():
+                return False
+        except BusyError:
+            return True
+
     def task(self, task_id):
         row = self.db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         if not row:
@@ -158,3 +165,10 @@ class Store:
         if not row:
             raise ApeeError("此任務還沒有執行記錄。")
         return json.loads(row[0])
+
+    def runs(self, task_id=None):
+        if task_id is None:
+            rows = self.db.execute("SELECT data FROM runs ORDER BY id")
+        else:
+            rows = self.db.execute("SELECT data FROM runs WHERE task_id=? ORDER BY id", (task_id,))
+        return [json.loads(row[0]) for row in rows]

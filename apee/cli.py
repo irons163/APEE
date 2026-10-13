@@ -51,6 +51,9 @@ def parser():
     pause.add_argument("--reason", default="使用者暫停派工。")
     resume = sub.add_parser("resume", help="恢復派工；不會直接執行任務")
     resume.add_argument("--codex", action="store_true", help="清除 Codex 暫停原因，將等待中的任務重新入列")
+    recover = sub.add_parser("recover", help="檢查未完成嘗試，或將已停止的指定嘗試記為中斷")
+    recover.add_argument("task", nargs="?", help="省略時只檢查；指定任務時保留工作副本並恢復狀態")
+    recover.add_argument("--legacy", action="store_true", help="僅舊版嘗試：已人工確認所有相關程序結束")
     for command in ("publish", "show", "retry", "cancel"):
         part = sub.add_parser(command)
         part.add_argument("task")
@@ -125,6 +128,8 @@ def main(argv=None):
             return int(status["had_errors"])
         concurrent = args.command in ("status", "show", "report", "pause") or (
             args.command == "resume" and not args.codex
+        ) or (
+            args.command == "recover" and not args.task
         )
         lock = nullcontext() if concurrent else engine.store.lock()
         with lock:
@@ -176,18 +181,30 @@ def main(argv=None):
             elif args.command == "show":
                 task = engine.store.task(args.task)
                 emit({"task": task, "run": engine.store.run(args.task) if task["run_id"] else None})
-            elif args.command in ("retry", "cancel"):
+            elif args.command == "recover":
+                if args.task:
+                    emit(engine.recover(args.task, legacy=args.legacy))
+                else:
+                    if args.legacy:
+                        raise ApeeError("--legacy 必須明確指定任務 ID。")
+                    emit({"engine_active": engine.store.engine_active(), "attempts": engine.recovery_status()})
+            elif args.command == "retry":
+                engine.retry(args.task)
+                print(f"{args.task}：{STATES['queued']}")
+            elif args.command == "cancel":
                 task = engine.store.task(args.task)
-                allowed = ("failed", "interrupted", "waiting") if args.command == "retry" else ("queued", "waiting")
-                if task["state"] not in allowed:
+                if task["state"] not in ("queued", "waiting"):
                     raise ApeeError(f"此操作不適用於 {task['state']} 狀態。")
-                state = "queued" if args.command == "retry" else "cancelled"
-                engine.store.transition(args.task, state, {"requested_by": "user"})
-                print(f"{args.task}：{STATES[state]}")
+                engine.store.transition(args.task, "cancelled", {"requested_by": "user"})
+                print(f"{args.task}：{STATES['cancelled']}")
             elif args.command == "status":
                 attempts = engine.store.attempts_today()
                 print(f"今日嘗試：{attempts['used']}/{config.daily_attempt_limit}（{attempts['date']} UTC）")
                 print("連續執行：" + ("運作中" if engine.store.worker_active() else "未運作"))
+                if not engine.store.engine_active():
+                    recovery = engine.recovery_status()
+                    if recovery:
+                        print(f"需要恢復或核對的嘗試：{len(recovery)}；執行 recover 查看。")
                 if engine.store.control("paused"):
                     print("派工已暫停；resume 可恢復。")
                 hold = engine.store.control("codex_hold")

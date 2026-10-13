@@ -3,9 +3,11 @@
 import os
 import signal
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 from .config import ApeeError
+from .leases import attempt_lease
 
 
 def limited_env():
@@ -16,6 +18,22 @@ def limited_env():
 
 
 class Runner:
+    @contextmanager
+    def lease(self, run_dir):
+        run_dir = Path(run_dir).resolve()
+        previous = getattr(self, "_lease", None)
+        if previous:
+            if previous[0] != run_dir:
+                raise ApeeError("不能在同一執行器中同時持有不同嘗試的執行鎖。")
+            yield
+            return
+        with attempt_lease(run_dir) as descriptor:
+            self._lease = (run_dir, descriptor)
+            try:
+                yield
+            finally:
+                self._lease = previous
+
     def run(self, args, cwd=None, timeout=120, log=None, stdin=None, restricted=False):
         env = limited_env() if restricted else dict(os.environ)
         env.update(GIT_TERMINAL_PROMPT="0", GH_PROMPT_DISABLED="1", GH_HOST="github.com")
@@ -27,11 +45,13 @@ class Runner:
             log.parent.mkdir(parents=True, exist_ok=True)
             handle = log.open("w", encoding="utf-8")
         try:
+            lease = getattr(self, "_lease", None)
             process = subprocess.Popen(
                 [str(arg) for arg in args], cwd=cwd, env=env, text=True,
                 stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
                 stdout=handle or subprocess.PIPE, stderr=subprocess.STDOUT,
                 start_new_session=True,
+                pass_fds=(lease[1],) if lease else (),
             )
             try:
                 output, _ = process.communicate(stdin, timeout=timeout)

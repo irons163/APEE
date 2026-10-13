@@ -8,9 +8,13 @@ from pathlib import Path
 from .config import ApeeError, Config, DispatchBlocked
 from .executors import CodexExecutor, ExecutorUnavailable, PatchExecutor, Validator
 from .github import GitHub
+from .leases import attempt_lease, lease_state
 from .process import Runner
 from .reviews import snapshot, summary
 from .store import Store, now
+
+
+RECOVERABLE_STATES = {"preparing", "running", "testing"}
 
 
 def issue_spec(issue):
@@ -46,6 +50,12 @@ class Engine:
         paused = self.store.control("paused")
         if paused:
             return {"kind": "paused", "message": "已暫停開始新任務。", "detail": paused}
+        pending = [item for item in self.recovery_status()
+                   if item["lease"] in ("active", "unreadable")
+                   or (item["current_attempt"] and item["task_state"] in RECOVERABLE_STATES)]
+        if pending:
+            return {"kind": "recovery_required", "attempts": pending,
+                    "message": "尚有未完成嘗試或殘留程序；執行 recover 查看，處理後才能開始新任務。"}
         hold = self.store.control("codex_hold") if use_codex else None
         if hold:
             return hold
@@ -54,6 +64,76 @@ class Engine:
             return dict(attempts, kind="daily_limit", limit=self.config.daily_attempt_limit,
                         message="已達每日嘗試上限；下個 UTC 日期才會恢復派工。")
         return None
+
+    def recovery_status(self):
+        tasks = {task["id"]: task for task in self.store.tasks()}
+        result, recorded = [], set()
+        for run in self.store.runs():
+            task = tasks[run["task_id"]]
+            current = task["run_id"] == run["id"]
+            state = lease_state(self.config.state_dir / "runs" / run["id"])
+            if not (state in ("active", "unreadable") or
+                    (current and task["state"] in RECOVERABLE_STATES | {"publishing"})):
+                continue
+            if state == "active":
+                action = "wait_for_processes"
+            elif state == "unreadable":
+                action = "inspect_lease"
+            elif task["state"] == "publishing":
+                action = "publish"
+            else:
+                action = "recover" if state == "idle" else (
+                    "inspect_lease" if run.get("lease_version") else "inspect_legacy"
+                )
+            result.append(dict(task=task["id"], task_state=task["state"], run_id=run["id"],
+                               current_attempt=current, lease=state, action=action,
+                               workspace=run["workspace"]))
+            recorded.add(task["id"])
+        for task in tasks.values():
+            if task["state"] in RECOVERABLE_STATES and task["id"] not in recorded:
+                result.append(dict(task=task["id"], task_state=task["state"], run_id=task["run_id"],
+                                   current_attempt=True, lease="missing", action="inspect_legacy",
+                                   workspace=None))
+        return result
+
+    def recover(self, task_id, legacy=False):
+        task = self.store.task(task_id)
+        run = self.store.run(task_id)
+        if task["state"] == "publishing":
+            return dict(task=task_id, state="publishing", run_id=run["id"], next_action="publish",
+                        message="交付結果需核對；保留原狀態，使用 publish 核對既有 PR。")
+        if task["state"] == "interrupted" and run.get("recovery"):
+            return dict(task=task_id, state="interrupted", run_id=run["id"],
+                        workspace=run["workspace"], next_action="retry")
+        if task["state"] not in RECOVERABLE_STATES:
+            raise ApeeError("只有未完成的準備、開發或測試嘗試可以恢復。")
+        run_dir = self.config.state_dir / "runs" / run["id"]
+
+        def mark_interrupted(proof):
+            run["recovery"] = dict(at=now(), previous_state=task["state"], proof=proof)
+            run.setdefault("error", "執行程序已停止；工作副本已保留，可明確 retry 後使用新的 checkout。")
+            self.store.transition(task_id, "interrupted", {
+                "reason": "recovered_abandoned_attempt", "previous_state": task["state"], "proof": proof,
+            }, run=run)
+
+        try:
+            with attempt_lease(run_dir, create=False):
+                mark_interrupted("lease_idle")
+        except FileNotFoundError as exc:
+            if not legacy or run.get("lease_version") is not None:
+                raise ApeeError("缺少執行鎖紀錄，狀態保持不變；僅舊版嘗試可在人工確認程序結束後加 --legacy。") from exc
+            mark_interrupted("legacy_manually_checked")
+        return dict(task=task_id, state="interrupted", run_id=run["id"],
+                    workspace=run["workspace"], next_action="retry")
+
+    def retry(self, task_id):
+        task = self.store.task(task_id)
+        if task["state"] not in ("failed", "interrupted", "waiting"):
+            raise ApeeError(f"此操作不適用於 {task['state']} 狀態。")
+        for run in self.store.runs(task_id):
+            if lease_state(self.config.state_dir / "runs" / run["id"]) in ("active", "unreadable"):
+                raise ApeeError("這項任務的舊嘗試仍有執行程序，或執行鎖無法讀取；未重新入列。")
+        self.store.transition(task_id, "queued", {"requested_by": "user"})
 
     def sync(self):
         added, errors = [], []
@@ -102,7 +182,14 @@ class Engine:
         spec = task["spec"]
         run = dict(id=run_id, task_id=task_id, repo=task["repo"], started_at=now(),
                    workspace=str(workspace), run_dir=str(run_dir), project=project, spec=spec,
-                   branch=f"apee/task-{run_id[:16]}")
+                   branch=f"apee/task-{run_id[:16]}", lease_version=1)
+        with self.runner.lease(run_dir):
+            return self._execute(task, project, run, local_only, patch)
+
+    def _execute(self, task, project, run, local_only, patch):
+        task_id = task["id"]
+        run_dir, workspace = Path(run["run_dir"]), Path(run["workspace"])
+        spec = run["spec"]
         self.store.transition(task_id, "preparing", run=run)
         try:
             if spec["source"] == "github":
@@ -201,6 +288,11 @@ class Engine:
         if task["state"] not in ("ready", "publishing"):
             raise ApeeError("只有完成驗證的任務可以交付 Draft PR。")
         run = self.store.run(task_id)
+        with self.runner.lease(self.config.state_dir / "runs" / run["id"]):
+            return self._publish(task, run)
+
+    def _publish(self, task, run):
+        task_id = task["id"]
         workspace = Path(run["workspace"])
         if not run.get("tests") or not all(t.get("passed") is True for t in run["tests"]):
             raise ApeeError("缺少完整測試結果。")

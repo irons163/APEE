@@ -2,7 +2,7 @@
 
 把多個 GitHub 專案的開發任務排進同一個工作循環：**取得任務 → 獨立工作副本 → 自動開發 → 執行測試 → 交付待審變更**。
 
-這是 **0.3.0 引擎原型**。已有可執行的命令列、持久任務佇列、有限的連續執行模式、Codex 執行介面、原生 sandbox 測試、Draft PR 交付與交付後狀態追蹤。首個真實交付為 [codex-pool-manager PR #9](https://github.com/irons163/codex-pool-manager/pull/9)：修補由目前對話提供，APEE 已套用、獨立測試、提交並建立 Draft PR。Codex CLI 首跑遇到用量上限，因此完整「模型自動修改 → PR」仍未驗收。詳見 [驗證紀錄](docs/VALIDATION.md)。
+這是 **0.4.0 引擎原型**。已有可執行的命令列、持久任務佇列、有限的連續執行模式、Codex 執行介面、原生 sandbox 測試、Draft PR 交付、交付後狀態追蹤與異常中斷恢復。2026-10-13 已透過 [APEE PR #1](https://github.com/irons163/APEE/pull/1) 完成一次真實「模型自主修改 → 獨立驗證 → 提交 → Draft PR」驗收，修正設定搬移後的驗證路徑。加入本版恢復機制後，77 項測試全數通過。較早的 [codex-pool-manager PR #9](https://github.com/irons163/codex-pool-manager/pull/9) 則驗證外部修補的套用與交付。詳見 [驗證紀錄](docs/VALIDATION.md)。
 
 ## 第一版提供什麼
 
@@ -16,12 +16,13 @@
 - GitHub 寫入回應不明時，重試交付會先核對既有 PR，避免重複建立。不會自動合併或部署。
 - 可在前景連續檢查任務，限制輪數、總嘗試數與每日嘗試數；等待期間可查看狀態、加入任務、暫停或恢復。
 - 遇到已辨識的 Codex 額度、請求頻率或登入錯誤，保存原因並停止新的模型派工；重新開啟仍保留暫停原因。
+- 主程序意外結束後，未完成嘗試會阻擋新的開發派工；確認執行鎖已釋放後，可保留原工作副本並明確恢復為中斷狀態，再使用新的 checkout 重試。
 - 追蹤已交付 PR 的 GitHub 檢查、審查要求、衝突、合併及關閉狀態；總覽集中列出需處理的成果。
 
 ## 執行需求
 
 - macOS、Python 3.9+、Git、已登入的 GitHub CLI，以及已登入的 Codex CLI。
-- 本機驗證版本為 Codex CLI `0.155.1`、GitHub CLI `2.94.0`、Python `3.9.6`。需支援 `codex exec --ignore-user-config` 及 `codex sandbox --permission-profile`。
+- 2026-10-13 本機驗證版本為 Codex CLI `0.162.0-alpha.17.2`、GitHub CLI `2.102.0`、Python `3.9.6`。需支援 `codex exec --ignore-user-config` 及 `codex sandbox --permission-profile`。
 - 各專案的開發工具須在 `PATH` 中可執行；例如 Node、npm、Swift 或 Python。
 
 APEE 本身只使用 Python 標準函式庫，從此目錄即可執行，不需要安裝套件：
@@ -141,6 +142,25 @@ python3 -m apee refresh 'your-account/your-project#123'
 
 若 GitHub 回報已重開，該任務恢復 `review` 並繼續追蹤。PR 追蹤只是讀取遠端狀態；不會自動修復 CI、要求審查、核准、合併或部署。檢查結果僅代表 GitHub 回傳的項目，尚未驗證所有必需檢查、分支保護規則或合併資格。
 
+## 異常中斷與恢復
+
+主機重開或主程序被強制終止後，任務可能仍停在準備、開發或測試中。先查看本機未完成嘗試，再指定要處理的任務：
+
+```sh
+python3 -m apee recover
+python3 -m apee recover 'your-account/your-project#123'
+python3 -m apee retry 'your-account/your-project#123'
+python3 -m apee run 'your-account/your-project#123' --local-only
+```
+
+省略任務 ID 的 `recover` 只檢查，不改任務狀態。指定 ID 後，命令取得本機執行鎖，確認原嘗試的鎖已釋放，才將任務記為 `interrupted`。工作副本、原需求、模型記錄與既有測試結果會保留；重新入列及執行分別由 `retry`、`run` 控制，新嘗試使用新的 checkout。
+
+主程序與它直接啟動的命令共同持有每次嘗試的執行鎖。即使主程序消失，仍有命令持鎖時也會阻擋恢復、重試和新的開發派工；先讓相關程序結束，再執行 `recover`。`status` 與總覽會指出待恢復或需檢查的紀錄。恢復及查詢本身不會增加開發嘗試數，每日上限仍包含原先已開始的嘗試。
+
+任務若停在 `publishing`，`recover` 會指向 `publish`，由它沿用原驗證提交並核對既有 PR。已完成驗證或交付的成果保持原狀。
+
+0.3 及更早版本的嘗試沒有執行鎖紀錄。人工確認相關程序全部結束後，可明確使用 `recover TASK_ID --legacy`，紀錄會標示人工確認來源。這個選項僅適用舊版資料；新版的鎖遺失、無法讀取或仍被持有時，仍需先檢查及處理。
+
 ## 看成果與處理失敗
 
 ```sh
@@ -179,6 +199,8 @@ APEE_NATIVE_TESTS=1 python3 -B -m unittest discover -s tests -v
 
 連續模式另驗證非零結束碼的額度錯誤、跨重啟暫停、明確恢復、每日上限換日、執行中暫停、設定重新載入、單一連續執行器、安靜等待及 SIGTERM 結束。額度情境使用固定錯誤的本機程序，不算真實模型自主開發。
 
+恢復機制以真實 `SIGKILL` 終止準備、開發與測試中的主程序，驗證存活子程序仍持有執行鎖、阻擋恢復及新派工。另涵蓋原生 sandbox 鎖繼承、明確恢復、歷史嘗試、舊版資料、交付結果核對、保留工作副本與新 checkout 重試。
+
 PR 追蹤驗證檢查狀態分類、版本漂移、要求修改、衝突、合併／關閉／重開、連線故障與恢復、跨重啟保存、觀察去重及有上限的輪詢。故障情境使用 GitHub 替身；真實試點則另有實際讀取證據。
 
 ## 目前限制
@@ -190,7 +212,7 @@ PR 追蹤驗證檢查狀態分類、版本漂移、要求修改、衝突、合�
 - 模型沿用 CLI 登入，忽略個人 `config.toml` 並明確指定 workspace-write；未指定 `model` 時使用 CLI 預設。專案與管理政策仍可能限制執行。原始碼與任務內容會交由設定的模型服務處理。
 - 目前限制每次模型時間、每個命令時間、每輪／連續執行總嘗試數與每日嘗試數，尚未提供可保證的 token／費用上限。失敗不會無限重試。
 - Codex 全域暫停依據已辨識的結構化服務錯誤；未知錯誤保存為一般失敗。跨日不會自動解除模型服務的暫停，需要明確恢復。
-- 正常中斷會記錄；若主機斷電或程序被強制殺死，未完成狀態會保留，避免自動重播。需先檢查工作副本與殘留程序；目前未提供自動恢復這種嘗試的功能。
+- 正常中斷會記錄；若主機斷電或程序被強制殺死，未完成狀態會保留。`recover` 依據本機執行鎖明確恢復狀態；殘留程序需先結束，工作副本及原紀錄會保留。尚無跨主機租約、自動重試或任意背景程序追蹤。
 - discovery 最多讀取 1,000 個 repositories；Issue 同步使用分頁。
 
 ## 設計與介面依據

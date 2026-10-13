@@ -53,12 +53,28 @@ def render(engine):
                   f"最後更新 {worker.get('updated_at', worker['started_at'])}。", ""]
     tasks = engine.store.tasks()
     runs = {task["id"]: engine.store.run(task["id"]) for task in tasks if task["run_id"]}
+    recovery = {}
+    if not engine.store.engine_active():
+        for item in engine.recovery_status():
+            previous = recovery.get(item["task"])
+            if previous is None or item["lease"] in ("active", "unreadable"):
+                recovery[item["task"]] = item
     attention = []
     for task in tasks:
         run = runs.get(task["id"], {})
         reasons = list(run.get("pr_status", {}).get("attention", []))
         if run.get("pr_refresh_error"):
             reasons.insert(0, "無法更新 PR 狀態：" + run["pr_refresh_error"]["message"])
+        if task["id"] in recovery:
+            item = recovery[task["id"]]
+            if item["lease"] == "active":
+                reasons.append("殘留程序仍持有執行鎖；先讓程序結束，再 recover 檢查。")
+            elif item["action"] == "publish":
+                reasons.append("交付結果需核對；使用 publish 核對既有 PR。")
+            elif item["action"] == "recover":
+                reasons.append("原執行已停止；使用 recover 記為中斷，保留工作副本。")
+            else:
+                reasons.append("執行鎖缺失或無法讀取；需要人工檢查未完成嘗試。")
         if reasons:
             attention.append((task, run, reasons))
     if attention:
