@@ -9,6 +9,7 @@ from .config import ApeeError, Config, commands, repo_name
 from .engine import Engine
 from .process import Runner
 from .report import STATES, render, review_description
+from .service import Service
 from .store import now
 from .worker import work
 
@@ -47,6 +48,18 @@ def parser():
     worker.add_argument("--max-cycles", type=int, default=12, help="最多輪數，包含等待輪次，預設 12")
     worker.add_argument("--max-tasks", type=int, default=5, help="本次最多開始幾次嘗試，失敗也計入，預設 5")
     worker.add_argument("--local-only", action="store_true")
+    worker.add_argument("--expected-state-dir", type=Path, help="背景服務固定的狀態目錄；變更時停止執行")
+    service = sub.add_parser("service", help="管理 macOS 使用者背景服務")
+    actions = service.add_subparsers(dest="service_action", required=True)
+    for name in ("render", "install"):
+        action = actions.add_parser(name)
+        action.add_argument("--interval", type=int, default=300, help="排程間隔秒數，至少 60，預設 300")
+        action.add_argument("--max-tasks", type=int, default=1, help="每次喚醒最多開始的嘗試數，預設 1")
+        action.add_argument("--local-only", action="store_true")
+        if name == "render":
+            action.add_argument("--output", type=Path, help="另外輸出可檢查的 plist；此指令不登錄服務")
+    for name in ("start", "stop", "status", "uninstall"):
+        actions.add_parser(name)
     pause = sub.add_parser("pause", help="暫停開始新任務，讓正在執行的任務完成")
     pause.add_argument("--reason", default="使用者暫停派工。")
     resume = sub.add_parser("resume", help="恢復派工；不會直接執行任務")
@@ -115,7 +128,21 @@ def main(argv=None):
     args = parser().parse_args(argv)
     engine = None
     try:
+        if args.command == "service":
+            service = Service(args.config)
+            if args.service_action in ("render", "install"):
+                options = dict(interval=args.interval, max_tasks=args.max_tasks, local_only=args.local_only)
+                if args.service_action == "render":
+                    emit(service.render(output=args.output, **options))
+                else:
+                    emit(service.install(**options))
+            else:
+                emit(getattr(service, args.service_action)())
+            return 0
         config = Config(args.config)
+        if (args.command == "work" and args.expected_state_dir is not None and
+                args.expected_state_dir.expanduser().resolve() != config.state_dir):
+            raise ApeeError("背景服務的 state_dir 已變更；請停止原服務後重新安裝，未開始工作。")
         if args.command == "doctor":
             return doctor(config)
         engine = Engine(config)

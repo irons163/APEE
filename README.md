@@ -2,7 +2,7 @@
 
 把多個 GitHub 專案的開發任務排進同一個工作循環：**取得任務 → 獨立工作副本 → 自動開發 → 執行測試 → 交付待審變更**。
 
-這是 **0.4.0 引擎原型**。已有可執行的命令列、持久任務佇列、有限的連續執行模式、Codex 執行介面、原生 sandbox 測試、Draft PR 交付、交付後狀態追蹤與異常中斷恢復。2026-10-13 已透過 [APEE PR #1](https://github.com/irons163/APEE/pull/1) 完成一次真實「模型自主修改 → 獨立驗證 → 提交 → Draft PR」驗收，修正設定搬移後的驗證路徑。加入本版恢復機制後，77 項測試全數通過。較早的 [codex-pool-manager PR #9](https://github.com/irons163/codex-pool-manager/pull/9) 則驗證外部修補的套用與交付。詳見 [驗證紀錄](docs/VALIDATION.md)。
+這是 **0.5.0 引擎原型**。已有可執行的命令列、持久任務佇列、有限的連續執行模式、macOS 背景排程、Codex 執行介面、原生 sandbox 測試、Draft PR 交付、交付後狀態追蹤與異常中斷恢復。2026-10-13 已透過 [APEE PR #1](https://github.com/irons163/APEE/pull/1) 完成一次真實「模型自主修改 → 獨立驗證 → 提交 → Draft PR」驗收，修正設定搬移後的驗證路徑。較早的 [codex-pool-manager PR #9](https://github.com/irons163/codex-pool-manager/pull/9) 則驗證外部修補的套用與交付。詳見 [驗證紀錄](docs/VALIDATION.md)。
 
 ## 第一版提供什麼
 
@@ -15,6 +15,7 @@
 - 可先保留本機審查包，也可依專案設定自動推送任務分支並建立 Draft PR。
 - GitHub 寫入回應不明時，重試交付會先核對既有 PR，避免重複建立。不會自動合併或部署。
 - 可在前景連續檢查任務，限制輪數、總嘗試數與每日嘗試數；等待期間可查看狀態、加入任務、暫停或恢復。
+- 可安裝目前使用者的 macOS 背景排程，每次喚醒只跑一輪，沿用暫停、執行鎖與每日嘗試上限；提供預覽、安裝、啟停、狀態與移除指令。
 - 遇到已辨識的 Codex 額度、請求頻率或登入錯誤，保存原因並停止新的模型派工；重新開啟仍保留暫停原因。
 - 主程序意外結束後，未完成嘗試會阻擋新的開發派工；確認執行鎖已釋放後，可保留原工作副本並明確恢復為中斷狀態，再使用新的 checkout 重試。
 - 追蹤已交付 PR 的 GitHub 檢查、審查要求、衝突、合併及關閉狀態；總覽集中列出需處理的成果。
@@ -114,6 +115,44 @@ python3 -m apee work
 
 連續模式每輪重新讀取設定，等待時不占用任務執行鎖；同一份狀態資料只能有一個連續執行器，手動開始任務也受執行鎖與每日上限限制。運行期間不能更換 `state_dir`，需先停止後重新啟動。
 
+## macOS 背景排程
+
+先以明確的設定路徑產生預覽；此步只輸出設定，不會登錄或啟動排程：
+
+```sh
+python3 -m apee --config /absolute/path/settings.json service render \
+  --interval 300 --max-tasks 1 --output /tmp/apee-service-preview.plist
+```
+
+確認後安裝目前桌面登入使用者的 LaunchAgent，並可立即執行一輪：
+
+```sh
+python3 -m apee --config /absolute/path/settings.json service install --interval 300 --max-tasks 1
+python3 -m apee --config /absolute/path/settings.json service start
+python3 -m apee --config /absolute/path/settings.json service status
+```
+
+`install` 啟用後續排程，預設每 300 秒喚醒一次，間隔至少 60 秒；安裝當下不執行任務。`start` 啟用排程並要求立即執行，已在執行時保持當前工作。每次喚醒執行 `work --max-cycles 1`，預設最多開始 1 次嘗試；`--max-tasks` 可調整，但仍受每輪設定與持久的每日上限限制。`install` 加上 `--local-only` 可讓每次成果留在本機。更換服務選項需先移除再安裝。
+
+這是登入使用者的背景排程，登出後不執行。電腦睡眠期間或前一輪仍在執行時錯過的間隔不會補跑；失敗不會透過 KeepAlive 立即反覆重啟。每次新喚醒都沿用原狀態資料，已保存的暫停、每日嘗試數與異常中斷阻擋持續有效。
+
+安裝與啟動前會以固定環境檢查 Git、GitHub CLI、Codex CLI 及登入，再以一次性的真實 launchd 程序檢查程式、設定檔與狀態目錄的背景存取；檢查不執行開發任務，結束後移除。macOS 隱私權可能阻擋背景讀取 `Documents`、`Desktop` 等位置。若檢查失敗，將程式、設定與狀態資料放在背景可存取的位置（例如 `~/Developer`），或依 macOS 隱私權設定允許存取後，再安裝服務。只有前景 `doctor` 通過不足以證明背景可用。
+
+服務固定 Python、程式工作目錄、設定檔與 `state_dir` 的絕對路徑。保留程式所在位置；搬移程式、Python 或狀態目錄後需重新安裝。更改 `state_dir` 時，舊排程會在建立新狀態或開始工作前停止該輪，避免意外重設每日上限。一般專案設定仍在每輪重新載入。
+
+背景環境使用白名單並清除其他繼承變數，保留明確的工具 PATH、HOME、語系與 CLI 設定目錄；包含 `~/.local/bin`。不將 `GH_TOKEN`、`GITHUB_TOKEN` 或 `OPENAI_API_KEY` 存入服務檔，沿用 CLI 的本機登入。服務檔與管理紀錄以使用者專用權限保存。
+
+```sh
+python3 -m apee --config /absolute/path/settings.json service stop
+python3 -m apee --config /absolute/path/settings.json service uninstall
+```
+
+`stop` 停止目前程序並停用後續排程，直到明確 `start` 或 `install`；正在開發的任務可能因此中斷，後續依 `recover`／`retry` 處理。若只想讓當前任務完成並暫停後續派工，使用 `pause`。`uninstall` 先停止服務，只移除已核對的服務檔與安裝紀錄，保留 SQLite、checkout、嘗試與輸出記錄。
+
+管理紀錄位於 `~/Library/Application Support/APEE/services`，獨立於設定及任務資料；設定檔損壞或遺失後，仍可帶入原本的絕對路徑執行 `stop`／`uninstall`。同一份狀態資料不接受第二個服務設定。登錄回應不明時保留紀錄，重試會核對既有服務；無法核對的檔案或服務不會被覆寫或移除。
+
+`service status` 顯示是否已安裝、載入、正在執行、是否需要重新安裝，以及最近一次程序結束碼。這些是排程狀態；任務成果使用 `status`、`show` 與總覽確認。標準輸出與錯誤位於 `state_dir/service/stdout.log`、`stderr.log`，路徑也會由服務狀態回報。
+
 ## 追蹤已交付的成果
 
 ```sh
@@ -201,11 +240,13 @@ APEE_NATIVE_TESTS=1 python3 -B -m unittest discover -s tests -v
 
 恢復機制以真實 `SIGKILL` 終止準備、開發與測試中的主程序，驗證存活子程序仍持有執行鎖、阻擋恢復及新派工。另涵蓋原生 sandbox 鎖繼承、明確恢復、歷史嘗試、舊版資料、交付結果核對、保留工作副本與新 checkout 重試。
 
+背景服務測試涵蓋設定預覽、環境與登入檢查、背景存取失敗、登錄回應不明、啟停與移除失敗、狀態目錄變更、重複設定及資料保留。`APEE_NATIVE_TESTS=1` 另以隔離的程式、空專案設定與狀態目錄，實際登錄 launchd、執行一輪、核對 SQLite，再停止並移除；不會啟動正式專案排程。
+
 PR 追蹤驗證檢查狀態分類、版本漂移、要求修改、衝突、合併／關閉／重開、連線故障與恢復、跨重啟保存、觀察去重及有上限的輪詢。故障情境使用 GitHub 替身；真實試點則另有實際讀取證據。
 
 ## 目前限制
 
-- 目前是循序執行的本機引擎，支援有限的前景連續模式；沒有桌面介面、背景常駐排程、跨主機 worker、功能探索或自動產品決策。
+- 目前是循序執行的本機引擎，支援有限的前景連續模式與 macOS 使用者背景排程；沒有桌面介面、跨主機 worker、功能探索或自動產品決策。
 - 自主範圍為執行已提供的任務與追蹤已交付成果。尚無獨立模型程式碼審查、GitHub CI 自動修復或自動 merge。
 - 只接 GitHub.com 同一 repository 的任務分支；尚未支援 Enterprise、fork PR 或 submodules 的特殊準備流程。
 - 專案準備與測試使用 Codex sandbox，允許 checkout 及系統暫存目錄寫入。這不是容器／VM；適用於你信任的程式庫，不能當作任意不可信程式碼的隔離服務。
