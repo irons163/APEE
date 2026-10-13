@@ -1,14 +1,53 @@
 # APEE 驗證紀錄
 
-日期：2026-10-11，Asia/Taipei。
+最新日期：2026-10-13，Asia/Taipei。下方保留 2026-10-11 的歷史驗證結果。
 
 ## 結果
 
-目前 **0.3.0 通過 65 項測試**，包含原生 sandbox 驗證，沒有跳過項目。在 0.2 連續執行控制之上新增 PR 檢查、審查、版本及合併／關閉追蹤。已實際完成的 GitHub 成果仍為 `codex-pool-manager` 外部修補的 Draft PR #9。
+目前 **0.3.0 加上設定路徑修正通過 67 項測試**，包含原生 sandbox 驗證，沒有跳過項目。在 0.2 連續執行控制之上已有 PR 檢查、審查、版本及合併／關閉追蹤。
 
-Codex CLI 的真實開發回合因用量上限失敗，因此尚不能將本版視為已通過「模型自主修改 → PR」完整驗收的系統。本輪 0.3 沒有重新消耗模型額度探測服務，也沒有新增 PR、合併、部署或安裝背景服務。
+**真實「模型自主修改 → 獨立驗證 → 提交 → Draft PR」已完成一次任務驗收**，成果為 [APEE PR #1](https://github.com/irons163/APEE/pull/1)。較早的 [codex-pool-manager PR #9](https://github.com/irons163/codex-pool-manager/pull/9) 保留為外部修補驗證與交付的證據。
 
-## 0.3 成果追蹤驗證
+## 2026-10-13：自主開發完整驗收
+
+### 環境與任務
+
+本機為 macOS arm64、Python `3.9.6`、Git `2.54.0`、Codex CLI `0.162.0-alpha.17.2`。GitHub CLI `2.102.0` 已從官方 release 安裝至使用者工具目錄並核對 SHA-256；使用者完成裝置登入後，`doctor` 全部通過，GitHub 確認帳號有 APEE repository 的讀寫權限。
+
+這台電腦原先沒有 `.apee`，因此初始化新的 SQLite 任務資料，沒有重建或假定舊機器的執行紀錄已遷移。下方歷史章節中的 `.apee` 檔案路徑屬於當時的原始工作區。既有 PR #9 另以 GitHub CLI 核對仍為 OPEN、Draft，head 維持 `bfe3a907db96aba3fc124f1e5138b5319ff3f635`。
+
+本次任務修正追蹤設定中的舊使用者絕對路徑。`tests` 與 `setup` 命令支援字面 `{config_dir}`，以設定檔所在目錄替換，原始 JSON 保留佔位符。允許修改範圍為 `apee/config.py`、`tests/test_engine.py`、`apee.json`、`README.md`。
+
+### 成功的正式 CLI 流程
+
+- 任務：`irons163/apee@bf98d79e2e3f864e`
+- Run：`6aaadec006df4595bdd94f9916ed3261`
+- 執行：`python3 -B -m apee run irons163/apee@bf98d79e2e3f864e --local-only`
+- 起始提交：`8ec71b43d260da8ec2f61b4d6e252e9383659b37`
+- 驗證與交付提交：`621b60c59778186b6c3dd8baf0ce1fd39ecb2f1c`
+- 模型來源：`agent.backend = codex`，模型事件包含 `turn.completed`。
+- 交付：`python3 -B -m apee publish irons163/apee@bf98d79e2e3f864e` 建立 [Draft PR #1](https://github.com/irons163/APEE/pull/1)。
+
+這次使用正式 GitHub adapter 讀取 metadata 與 clone。Codex 執行器產生四個檔案的變更，引擎另外執行測試與獨立驗收、核對內容版本與工作範圍，再建立提交及審查包。GitHub 寫入後已確認 OPEN、Draft、base `main`，遠端 head 與驗證提交相同。`refresh` 成功更新任務為 `review`，回報「草稿待審；未回報檢查；尚無審查結論」。
+
+### 驗證結果
+
+1. APEE 原生 sandbox 內的套件：67 項，65 項通過、2 項原生 sandbox 測試依條件跳過。獨立搬移驗收另行通過。紀錄為 `.apee/runs/6aaadec006df4595bdd94f9916ed3261/test-1.log` 與 `test-2.log`。
+2. 在同一驗證提交的 checkout 額外執行 `APEE_NATIVE_TESTS=1 python3 -B -m unittest discover -s tests -v`：**67 項全數通過，21.595 秒，沒有跳過項目**。完整輸出為 `.apee/runs/6aaadec006df4595bdd94f9916ed3261/native-full-suite.log`。
+3. 開發前準備的獨立檢查實際執行 setup 與測試腳本，驗證含空白的設定目錄、不同工作目錄、參數不額外展開，以及 `project-add` 重寫後仍保存佔位符。原版會失敗，修正版通過。
+4. Git whitespace、工作範圍、測試前後內容一致性及交付提交核對均通過。
+
+模型事件、來源、patch、審查包與驗證輸出保留於該 run 目錄。遠端核對保存為 `.apee/pr-1-verified.json`。本機程式碼分支為 `codex/portable-validation-paths`，以同一驗證提交建立。
+
+### 本次兩次嘗試的紀錄
+
+第一次 `0744be824624472c8c0ae057f794663b` 在等待 GitHub CLI 登入期間使用既有真實 SSH origin 讀取與 clone，模型已產生修正並通過一般套件。獨立驗收腳本卻把 macOS 的 `/var` 與 `/private/var` 別名視為不同路徑，引擎因此停止交付並保存為失敗。
+
+將獨立檢查的預期路徑正規化後，再確認原版仍會失敗、第一次修正版可通過。接著保留第一次紀錄，使用 `retry` 與正式 CLI 從新的 checkout 重新執行，完成上述第二次自主開發與交付。這份新狀態資料共記錄 2 次嘗試；目前沒有連續執行器運作。
+
+## 2026-10-11：0.3 成果追蹤驗證
+
+當時版本通過 65 項測試。真實 Codex 開發回合因用量上限失敗，當時完整自主流程尚未驗收，已交付成果為外部修補的 PR #9。
 
 執行：`APEE_NATIVE_TESTS=1 python3 -B -m unittest discover -s tests -v`
 

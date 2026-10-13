@@ -2,7 +2,7 @@
 
 把多個 GitHub 專案的開發任務排進同一個工作循環：**取得任務 → 獨立工作副本 → 自動開發 → 執行測試 → 交付待審變更**。
 
-這是 **0.3.0 引擎原型**。已有可執行的命令列、持久任務佇列、有限的連續執行模式、Codex 執行介面、原生 sandbox 測試、Draft PR 交付與交付後狀態追蹤。首個真實交付為 [codex-pool-manager PR #9](https://github.com/irons163/codex-pool-manager/pull/9)：修補由目前對話提供，APEE 已套用、獨立測試、提交並建立 Draft PR。Codex CLI 首跑遇到用量上限，因此完整「模型自動修改 → PR」仍未驗收。詳見 [驗證紀錄](docs/VALIDATION.md)。
+這是 **0.3.0 引擎原型**。已有可執行的命令列、持久任務佇列、有限的連續執行模式、Codex 執行介面、原生 sandbox 測試、Draft PR 交付與交付後狀態追蹤。2026-10-13 已透過 [APEE PR #1](https://github.com/irons163/APEE/pull/1) 完成一次真實「模型自主修改 → 獨立驗證 → 提交 → Draft PR」驗收，修正設定搬移後的驗證路徑，67 項測試全數通過。較早的 [codex-pool-manager PR #9](https://github.com/irons163/codex-pool-manager/pull/9) 則驗證外部修補的套用與交付。詳見 [驗證紀錄](docs/VALIDATION.md)。
 
 ## 第一版提供什麼
 
@@ -21,7 +21,7 @@
 ## 執行需求
 
 - macOS、Python 3.9+、Git、已登入的 GitHub CLI，以及已登入的 Codex CLI。
-- 本機驗證版本為 Codex CLI `0.155.1`、GitHub CLI `2.94.0`、Python `3.9.6`。需支援 `codex exec --ignore-user-config` 及 `codex sandbox --permission-profile`。
+- 2026-10-13 本機驗證版本為 Codex CLI `0.162.0-alpha.17.2`、GitHub CLI `2.102.0`、Python `3.9.6`。需支援 `codex exec --ignore-user-config` 及 `codex sandbox --permission-profile`。
 - 各專案的開發工具須在 `PATH` 中可執行；例如 Node、npm、Swift 或 Python。
 
 APEE 本身只使用 Python 標準函式庫，從此目錄即可執行，不需要安裝套件：
