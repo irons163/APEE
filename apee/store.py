@@ -36,6 +36,9 @@ class Store:
             CREATE TABLE IF NOT EXISTS controls (
                 key TEXT PRIMARY KEY, value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS usage_records (
+                run_id TEXT PRIMARY KEY, data TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS events_state_at ON events(state, at);
         """)
 
@@ -172,3 +175,11 @@ class Store:
         else:
             rows = self.db.execute("SELECT data FROM runs WHERE task_id=? ORDER BY id", (task_id,))
         return [json.loads(row[0]) for row in rows]
+
+    def usage_records(self):
+        return [json.loads(row[0]) for row in self.db.execute("SELECT data FROM usage_records ORDER BY run_id")]
+
+    def save_usage(self, record):
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO usage_records VALUES (?, ?)",
+                            (record["run_id"], json.dumps(record, ensure_ascii=False)))

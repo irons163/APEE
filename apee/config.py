@@ -2,6 +2,7 @@
 
 import json
 import re
+from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
 
 
@@ -44,6 +45,18 @@ def commands(value, name, required=False):
     return value
 
 
+def money(value, name, positive=False):
+    if not isinstance(value, str) or not re.fullmatch(r"\d{1,9}(?:\.\d{1,9})?", value):
+        raise ApeeError(f"{name} 必須是非負十進位字串。")
+    try:
+        result = Decimal(value)
+    except InvalidOperation as exc:
+        raise ApeeError(f"{name} 無法辨識。") from exc
+    if positive and result <= 0:
+        raise ApeeError(f"{name} 必須大於零。")
+    return result
+
+
 class Config:
     def __init__(self, path):
         self.path = Path(path).expanduser().resolve()
@@ -69,6 +82,35 @@ class Config:
         self.max_tasks = positive_int(data.get("max_tasks_per_cycle", 1), "max_tasks_per_cycle", 20)
         self.daily_attempt_limit = positive_int(data.get("daily_attempt_limit", 10), "daily_attempt_limit", 1000)
         self.max_pr_checks = positive_int(data.get("max_pr_checks_per_cycle", 20), "max_pr_checks_per_cycle", 100)
+        recovery = data.get("auto_recovery", {})
+        if (not isinstance(recovery, dict) or set(recovery) - {"enabled", "max_retries", "cooldown_seconds", "max_per_cycle"}
+                or type(recovery.get("enabled", False)) is not bool):
+            raise ApeeError("auto_recovery 設定無法辨識。")
+        retries = recovery.get("max_retries", 1)
+        if type(retries) is not int or not 0 <= retries <= 5:
+            raise ApeeError("auto_recovery.max_retries 必須是 0–5 的整數。")
+        cooldown = positive_int(recovery.get("cooldown_seconds", 300), "auto_recovery.cooldown_seconds")
+        if cooldown < 60:
+            raise ApeeError("自動恢復觀察時間至少 60 秒。")
+        self.auto_recovery = dict(enabled=recovery.get("enabled", False), max_retries=retries,
+                                 cooldown_seconds=cooldown,
+                                 max_per_cycle=positive_int(recovery.get("max_per_cycle", 1), "auto_recovery.max_per_cycle", 20))
+        budget = data.get("budget", {})
+        if not isinstance(budget, dict) or set(budget) - {"daily_tokens", "daily_estimated_usd", "prices_per_million"}:
+            raise ApeeError("budget 設定無法辨識。")
+        if "daily_tokens" in budget:
+            positive_int(budget["daily_tokens"], "budget.daily_tokens", 10**12)
+        if "daily_estimated_usd" in budget:
+            money(budget["daily_estimated_usd"], "budget.daily_estimated_usd", positive=True)
+            if not self.model or "prices_per_million" not in budget:
+                raise ApeeError("費用預算需要明確的 model 與 prices_per_million；不推測實際帳單。")
+        if "prices_per_million" in budget:
+            prices = budget["prices_per_million"]
+            if not isinstance(prices, dict) or set(prices) != {"input", "cached_input", "output"} or not self.model:
+                raise ApeeError("單價需要明確 model，以及 input、cached_input、output 三個欄位。")
+            for key, value in prices.items():
+                money(value, "budget.prices_per_million." + key)
+        self.budget = budget
         projects = data.get("projects", [])
         if not isinstance(projects, list):
             raise ApeeError("projects 必須是陣列。")

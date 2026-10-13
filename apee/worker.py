@@ -45,7 +45,7 @@ def work(engine, interval=300, max_cycles=12, max_tasks=5, local_only=False,
                 # Emit outcomes and changes; identical empty/paused polls stay quiet.
                 idle = (result.get("blocked"), result.get("busy", False))
                 errors = json.dumps(result.get("errors", []), sort_keys=True)
-                if (result.get("added") or result.get("runs") or result.get("pr_updates")
+                if (result.get("added") or result.get("runs") or result.get("pr_updates") or result.get('recoveries')
                         or (result.get("errors") and errors != previous_errors)
                         or result.get("attempts") or idle != previous_idle):
                     notify(result)

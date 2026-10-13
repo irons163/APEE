@@ -12,6 +12,8 @@ from .report import STATES, render, review_description
 from .service import Service
 from .store import now
 from .worker import work
+from .budget import Budget
+from .controls import configure, snapshot
 
 
 def parser():
@@ -72,6 +74,25 @@ def parser():
         part.add_argument("task")
     sub.add_parser("status", help="列出任務進度")
     sub.add_parser("report", help="產生中文總覽")
+    sub.add_parser('snapshot', help='桌面介面的本機 JSON 狀態，不連網')
+    settings = sub.add_parser('configure', help='更新用量與恢復政策，保留專案原始設定')
+    settings.add_argument('--settings-json', required=True)
+    budget = sub.add_parser('budget', help='核對本機模型用量與預算')
+    budgets = budget.add_subparsers(dest='budget_action', required=True)
+    budgets.add_parser('status')
+    budgets.add_parser('reconcile')
+    manual = budgets.add_parser('record', help='人工核對用量，必須提供原因')
+    manual.add_argument('run_id')
+    manual.add_argument('--input-tokens', type=int, required=True)
+    manual.add_argument('--cached-input-tokens', type=int, required=True)
+    manual.add_argument('--output-tokens', type=int, required=True)
+    manual.add_argument('--estimated-usd')
+    manual.add_argument('--reason', required=True)
+    desktop = sub.add_parser('desktop', help='建立 macOS 原生操作視窗')
+    desktops = desktop.add_subparsers(dest='desktop_action', required=True)
+    build = desktops.add_parser('build')
+    build.add_argument('--output', type=Path)
+    build.add_argument('--open', action='store_true')
     return p
 
 
@@ -145,22 +166,46 @@ def main(argv=None):
             raise ApeeError("背景服務的 state_dir 已變更；請停止原服務後重新安裝，未開始工作。")
         if args.command == "doctor":
             return doctor(config)
+        if args.command == 'desktop':
+            from .desktop import build, open_app
+            result = build(config, args.output)
+            emit(result)
+            if args.open:
+                open_app(result['app'])
+            return 0
         engine = Engine(config)
         # SIGTERM shares the same process-group cleanup path as Ctrl-C.
         def interrupted(_signum, _frame):
             raise KeyboardInterrupt()
         signal.signal(signal.SIGTERM, interrupted)
+        if args.command == 'snapshot':
+            emit(snapshot(engine))
+            return 0
         if args.command == "work":
             status = work(engine, args.interval, args.max_cycles, args.max_tasks, args.local_only, notify=emit)
             return int(status["had_errors"])
         concurrent = args.command in ("status", "show", "report", "pause") or (
+            args.command == 'budget' and args.budget_action == 'status'
+        ) or (
             args.command == "resume" and not args.codex
         ) or (
             args.command == "recover" and not args.task
         )
         lock = nullcontext() if concurrent else engine.store.lock()
         with lock:
-            if args.command == "pause":
+            if args.command == 'configure':
+                emit(configure(config, json.loads(args.settings_json)))
+                engine.reload_config()
+            elif args.command == 'budget':
+                budget = Budget(config, engine.store)
+                if args.budget_action == 'reconcile':
+                    budget.reconcile()
+                elif args.budget_action == 'record':
+                    budget.record_manual(args.run_id, dict(input_tokens=args.input_tokens,
+                                         cached_input_tokens=args.cached_input_tokens, output_tokens=args.output_tokens),
+                                         args.estimated_usd, args.reason)
+                emit(budget.summary())
+            elif args.command == "pause":
                 engine.store.set_control("paused", {"at": now(), "reason": args.reason})
                 print("已暫停開始新任務；正在執行的任務仍會完成驗證及原定交付。")
             elif args.command == "resume":
@@ -237,6 +282,11 @@ def main(argv=None):
                 hold = engine.store.control("codex_hold")
                 if hold:
                     print(hold["message"])
+                budget = Budget(config, engine.store)
+                usage = budget.summary()
+                print(f"今日 APEE 已核對用量：{usage['tokens']} tokens；用量不明 {len(usage['unknown_runs'])} 回合。")
+                if budget.blocker():
+                    print(budget.blocker()['message'])
                 tasks = engine.store.tasks()
                 for task in tasks:
                     print(f"{STATES.get(task['state'], task['state'])}\t{task['id']}\t{task['spec']['title']}")
@@ -256,7 +306,8 @@ def main(argv=None):
     finally:
         if engine:
             try:
-                print(f"總覽：{render(engine)}")
+                if args.command != 'snapshot':
+                    print(f"總覽：{render(engine)}")
             except (OSError, ValueError) as exc:
                 print(f"總覽更新失敗：{exc}", file=sys.stderr)
             finally:

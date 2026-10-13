@@ -7,6 +7,13 @@
   "max_tasks_per_cycle": 1,
   "daily_attempt_limit": 10,
   "max_pr_checks_per_cycle": 20,
+  "auto_recovery": {
+    "enabled": false,
+    "max_retries": 1,
+    "cooldown_seconds": 300,
+    "max_per_cycle": 1
+  },
+  "budget": {},
   "projects": [
     {
       "repo": "your-account/your-project",
