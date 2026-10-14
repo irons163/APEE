@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apee"
-version = "0.6.0"
+version = "0.6.1"
 description = "A local engine for GitHub development tasks and verified review handoffs"
 requires-python = ">=3.9"
 dependencies = []

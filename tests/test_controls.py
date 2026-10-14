@@ -12,10 +12,11 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+from apee import __version__
 from apee.budget import Budget, estimate, log_usage, token_usage
 from apee.cli import main
 from apee.config import ApeeError, Config, DispatchBlocked
-from apee.controls import configure, snapshot
+from apee.controls import add_project, configure, snapshot
 from apee.desktop import build
 from apee.engine import Engine
 from apee.leases import attempt_lease
@@ -137,11 +138,12 @@ class AutomaticRecoveryTests(CrashHarness, ControlsFixture):
 
     def test_daily_limit_defers_retry_and_attempt_is_counted_on_execution(self):
         self.policy()
-        task, _ = self.abandoned()
-        self.settings(daily_attempt_limit=1)
-        self.assertFalse(self.recover_once()[0]['retried'])
-        self.assertEqual(self.engine.store.total_attempts(), 1)
-        with patch('apee.store.now', return_value='2026-10-14T00:01:00+00:00'):
+        with patch('apee.store.now', return_value='2000-01-01T00:01:00+00:00'):
+            task, _ = self.abandoned()
+            self.settings(daily_attempt_limit=1)
+            self.assertFalse(self.recover_once()[0]['retried'])
+            self.assertEqual(self.engine.store.total_attempts(), 1)
+        with patch('apee.store.now', return_value='2000-01-02T00:01:00+00:00'):
             self.assertTrue(self.engine.auto_recover()[0]['retried'])
             self.assertEqual(self.engine.store.total_attempts(), 1)
             self.engine.execute(task)
@@ -380,8 +382,117 @@ class BudgetTests(ControlsFixture):
             self.assertIsNone(Budget(self.config,self.engine.store).blocker())
         self.assertEqual(len(self.engine.store.usage_records()),1)
 
+    def test_history_keeps_previous_day_usage_and_manual_audit_out_of_today(self):
+        self.meter(budget=dict(daily_tokens=12))
+        run = self.engine.execute(self.task())
+        record = self.engine.store.usage_records()[0]
+        record['at'] = '2000-01-01T23:59:59+00:00'
+        self.engine.store.save_usage(record)
+        budget = Budget(self.config, self.engine.store)
+        self.assertEqual(budget.summary()['tokens'], 0)
+        self.assertIsNone(budget.blocker())
+        self.assertEqual(budget.history()[0]['date'], '2000-01-01')
+        self.assertEqual(budget.history()[0]['tokens'], 12)
+        self.assertIsNone(budget.history()[0]['estimated_usd'])
+        budget.record_manual(run['id'], USAGE, '0.5', 'Historical audit based on fixture rates')
+        self.assertEqual(budget.summary('2000-01-01')['estimated_usd'], '0.5')
+        self.assertEqual(budget.summary()['tokens'], 0)
+        self.assertIsNone(budget.blocker())
+
+    def test_history_is_bounded_but_older_dates_remain_queryable(self):
+        from datetime import date, timedelta
+        for index in range(42):
+            day = (date(2000, 1, 1) + timedelta(days=index)).isoformat()
+            self.engine.store.save_usage(dict(run_id=f'fixture-{index}', at=day+'T00:00:00+00:00',
+                usage=token_usage([USAGE]), estimated_usd=None, status='known', source='fixture'))
+        budget = Budget(self.config, self.engine.store)
+        history = budget.history()
+        self.assertEqual(len(history), 30)
+        self.assertGreater(history[0]['date'], history[-1]['date'])
+        self.assertEqual(budget.summary('2000-01-01')['tokens'], 12)
+        self.assertEqual(len(budget.records()), 42)
+
+    def test_historical_date_validation_and_cli_do_not_change_ledger(self):
+        budget = Budget(self.config, self.engine.store)
+        for day in ('2026-02-30', '20261014', '2026-1-1', '', 123):
+            with self.subTest(day=day), self.assertRaises(ApeeError):
+                budget.summary(day)
+        with redirect_stdout(io.StringIO()) as output:
+            result = main(['--config', str(self.path), 'budget', 'status', '--date', '2000-01-01'])
+        self.assertEqual(result, 0)
+        summary, _ = json.JSONDecoder().raw_decode(output.getvalue())
+        self.assertEqual(summary['date'], '2000-01-01')
+        self.assertEqual(self.engine.store.usage_records(), [])
+
 
 class SettingsAndDesktopTests(ControlsFixture):
+    def test_add_project_preserves_latest_policies_and_raw_templates(self):
+        self.data['projects'][0]['tests'] = [[sys.executable, '{config_dir}/check.py']]
+        self.settings()
+        stale = self.config
+        configure(stale, dict(budget=dict(daily_tokens=123)))
+        add_project(stale, dict(repo='Example/Second', tests=[['python3', '{config_dir}/new.py']],
+                               setup=[], priority=2, publish_draft=False, setup_network=False))
+        latest = Config(self.path)
+        self.assertEqual(latest.budget, dict(daily_tokens=123))
+        self.assertEqual(latest.data['projects'][0], self.data['projects'][0])
+        self.assertEqual(latest.data['projects'][1]['tests'][0][1], '{config_dir}/new.py')
+        self.assertEqual(latest.project('example/second')['tests'][0][1], str(self.root/'new.py'))
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+
+    def test_invalid_or_duplicate_project_leaves_config_unchanged(self):
+        original = self.path.read_bytes()
+        cases = [dict(repo='example/second', tests=[]),
+                 dict(repo='example/second', tests=[['python3']], setup_network='yes'),
+                 dict(repo='example/second', tests=[['python3']], priority=6),
+                 dict(repo='EXAMPLE/DEMO', tests=[['different-test']])]
+        for project in cases:
+            with self.subTest(project=project), self.assertRaises(ApeeError):
+                add_project(self.config, project)
+            self.assertEqual(self.path.read_bytes(), original)
+
+    def test_add_project_rejects_changed_state_directory_and_ignores_old_temp_symlink(self):
+        target = self.root/'untouched.txt'
+        target.write_text('preserve')
+        self.path.with_name(self.path.name+'.tmp').symlink_to(target)
+        add_project(self.config, dict(repo='example/second', tests=[['python3']]))
+        self.assertEqual(target.read_text(), 'preserve')
+        latest = Config(self.path)
+        changed = dict(latest.data, state_dir='other-state')
+        self.path.write_text(json.dumps(changed))
+        with self.assertRaisesRegex(ApeeError, '狀態目錄'):
+            add_project(latest, dict(repo='example/third', tests=[['python3']]))
+        self.assertEqual(json.loads(self.path.read_text()), changed)
+
+    def test_snapshot_exposes_project_policy_and_unexpanded_commands(self):
+        self.data['projects'][0]['tests'] = [[sys.executable, '{config_dir}/check.py']]
+        self.data['projects'][0]['allowed_paths'] = ['calculator.py']
+        self.settings()
+        with patch('apee.controls.Service') as service:
+            service.return_value.status.return_value = dict(loaded=False)
+            result = snapshot(self.engine)
+        self.assertEqual(result['projects'][0]['tests'], self.data['projects'][0]['tests'])
+        self.assertEqual(result['projects'][0]['allowed_paths'], ['calculator.py'])
+        self.assertFalse(result['projects'][0]['publish_draft'])
+        self.assertEqual(result['budget_history'], [])
+
+    def test_enqueue_while_engine_is_locked_is_durable_and_deduplicated(self):
+        args = ['--config', str(self.path), 'enqueue', 'example/demo',
+                '--title=-Title with spaces', '--body=Keep $(literal) and completion criteria.']
+        with self.engine.store.lock(), redirect_stdout(io.StringIO()):
+            self.assertEqual(main(args), 0)
+            self.assertEqual(main(args), 0)
+            self.assertEqual(main(['--config', str(self.path), 'project-add', 'example/second',
+                                   '--test', '["python3"]']), 1)
+        tasks = self.engine.store.tasks()
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]['state'], 'queued')
+        self.assertEqual(tasks[0]['spec']['title'], '-Title with spaces')
+        self.assertIn('$(literal)', tasks[0]['spec']['body'])
+        self.assertEqual(self.engine.store.total_attempts(), 0)
+        self.assertEqual(len(self.engine.store.db.execute('SELECT * FROM events').fetchall()), 1)
+        self.assertNotIn('example/second', Config(self.path).projects)
+
     def test_invalid_policies_and_unpriced_cost_limits_are_rejected(self):
         cases=[dict(auto_recovery=dict(enabled='yes')),dict(auto_recovery=dict(max_retries=True)),
                dict(auto_recovery=dict(cooldown_seconds=59)),dict(auto_recovery=dict(max_retries=6)),
@@ -413,7 +524,7 @@ class SettingsAndDesktopTests(ControlsFixture):
             with redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(main(['--config',str(self.path),'snapshot']),0)
         result=json.loads(output.getvalue())
-        self.assertEqual(result['version'],'0.6.0')
+        self.assertEqual(result['version'],__version__)
         self.assertEqual(result['tasks'],[])
         self.assertEqual(result['budget']['tokens'],0)
         self.assertEqual(self.engine.store.total_attempts(),before)
@@ -480,7 +591,7 @@ class NativeDesktopTests(unittest.TestCase):
                                   capture_output=True,text=True,timeout=30)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             snapshot=json.loads(result.stdout)
-            self.assertEqual(snapshot['version'],'0.6.0')
+            self.assertEqual(snapshot['version'],__version__)
             self.assertEqual(snapshot['tasks'],[])
             self.assertEqual(snapshot['budget']['tokens'],0)
             self.assertFalse(snapshot['service']['loaded'])

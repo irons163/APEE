@@ -50,10 +50,14 @@ final class DashboardModel: ObservableObject {
     var budget: [String: Any] { data["budget"] as? [String: Any] ?? [:] }
     var service: [String: Any] { data["service"] as? [String: Any] ?? [:] }
     var paused: Bool { data["paused"] is [String: Any] }
+    var projects: [[String: Any]] { data["projects"] as? [[String: Any]] ?? [] }
+    var history: [[String: Any]] { data["budget_history"] as? [[String: Any]] ?? [] }
 
-    func command(_ args: [String]) {
+    func command(_ args: [String], success: String = "操作已完成。", completed: (() -> Void)? = nil) {
         guard !busy else { return }
-        perform(args, snapshot: false)
+        message = ""
+        error = false
+        perform(args, snapshot: false, success: success, completed: completed)
     }
 
     func refresh() {
@@ -61,7 +65,7 @@ final class DashboardModel: ObservableObject {
         perform(["snapshot"], snapshot: true)
     }
 
-    private func perform(_ args: [String], snapshot: Bool) {
+    private func perform(_ args: [String], snapshot: Bool, success: String = "", completed: (() -> Void)? = nil) {
         guard let backend = backend else {
             message = "無法讀取這份 app 的執行設定。"
             error = true
@@ -78,9 +82,10 @@ final class DashboardModel: ObservableObject {
                         if let object = object { self.data = object }
                         else { self.message = "無法辨識狀態資料。"; self.error = true }
                     } else {
-                        self.message = "設定已套用。"
+                        self.message = success
                         self.error = false
                         self.refresh()
+                        completed?()
                     }
                 }
             } catch {
@@ -125,6 +130,7 @@ struct StatCard: View {
 struct Dashboard: View {
     @StateObject private var model = DashboardModel()
     @State private var tab = "工作總覽"
+    @State private var taskOpen = false
     private let timer = Timer.publish(every: 10, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -160,11 +166,13 @@ struct Dashboard: View {
             }
             Picker("檢視", selection: $tab) {
                 Text("工作總覽").tag("工作總覽")
+                Text("專案設定").tag("專案設定")
                 Text("用量與預算").tag("用量與預算")
                 Text("恢復政策").tag("恢復政策")
-            }.pickerStyle(.segmented).frame(width: 440)
+            }.pickerStyle(.segmented).frame(width: 560)
             Group {
                 if tab == "用量與預算" { BudgetPanel(model: model) }
+                else if tab == "專案設定" { ProjectsPanel(model: model) }
                 else if tab == "恢復政策" { RecoveryPanel(model: model) }
                 else { overview }
             }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -180,6 +188,7 @@ struct Dashboard: View {
             .disabled(model.busy && model.data.isEmpty)
             .onReceive(timer) { _ in model.refresh() }
             .onAppear { NSApp.activate(ignoringOtherApps: true) }
+            .sheet(isPresented: $taskOpen) { TaskPanel(model: model) }
     }
 
     var overview: some View {
@@ -188,6 +197,7 @@ struct Dashboard: View {
                 Label(model.paused ? "派工已暫停，當前任務仍可完成" : "依佇列與專案優先順序推進", systemImage: "circle.fill")
                     .foregroundStyle(model.paused ? .orange : .teal)
                 Spacer()
+                Button("加入任務", systemImage: "plus") { taskOpen = true }.disabled(model.busy)
                 Button("更新 GitHub 近況") { model.command(["refresh"]) }.disabled(model.busy)
                 Button(model.service["loaded"] as? Bool == true ? "停止背景排程" : "啟動背景排程") {
                     model.command(["service", model.service["loaded"] as? Bool == true ? "stop" : "start"])
@@ -219,6 +229,9 @@ struct Dashboard: View {
                                 if let error = task["error"] as? String { Text(error).font(.caption).foregroundStyle(.secondary).lineLimit(3) }
                             }
                             Spacer()
+                            if let path = task["run_dir"] as? String {
+                                Button("查看紀錄") { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
+                            }
                             if let link = task["pr_url"] as? String, let url = URL(string: link), url.scheme == "https", url.host == "github.com" {
                                 Button("查看 PR") { NSWorkspace.shared.open(url) }
                             }
@@ -237,6 +250,181 @@ struct Dashboard: View {
     }
 }
 
+struct FormFeedback: View {
+    @ObservedObject var model: DashboardModel
+    var body: some View {
+        if model.error && !model.message.isEmpty {
+            Text(model.message).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+        }
+    }
+}
+
+func commandLines(_ text: String) throws -> [String] {
+    try text.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.enumerated().map { index, line in
+        guard let data = line.data(using: .utf8),
+              let command = try? JSONSerialization.jsonObject(with: data) as? [String],
+              !command.isEmpty, command.allSatisfy({ !$0.isEmpty && !$0.contains("\0") }) else {
+            throw NSError(domain: "APEE", code: 1, userInfo: [NSLocalizedDescriptionKey: "第 \(index + 1) 行必須是非空命令陣列，例如 [\"python3\",\"-m\",\"unittest\"]。"])
+        }
+        return String(decoding: try JSONSerialization.data(withJSONObject: command), as: UTF8.self)
+    }
+}
+
+func projectCommands(_ project: [String: Any], _ key: String) -> String {
+    guard let commands = project[key] as? [[String]], !commands.isEmpty else { return "未設定" }
+    return commands.map { command in
+        guard let data = try? JSONSerialization.data(withJSONObject: command, options: [.withoutEscapingSlashes]) else { return "—" }
+        return String(decoding: data, as: UTF8.self)
+    }.joined(separator: "\n")
+}
+
+struct ProjectsPanel: View {
+    @ObservedObject var model: DashboardModel
+    @State private var projectOpen = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("已設定的專案").font(.title2.bold())
+                Spacer()
+                Button("加入專案", systemImage: "plus") { projectOpen = true }.disabled(model.busy)
+            }
+            Text("只有啟用的專案會接收任務。準備與測試命令決定成果是否可以交付。")
+                .foregroundStyle(.secondary)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if model.projects.isEmpty { Text("尚未設定專案，請先加入一個 GitHub repository。") }
+                    ForEach(Array(model.projects.enumerated()), id: \.offset) { _, project in
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text(value(project, "repo")).font(.headline)
+                                Spacer()
+                                Text(project["enabled"] as? Bool == true ? "已啟用" : "未啟用").foregroundStyle(.teal)
+                                Text("優先順序 " + value(project, "priority")).foregroundStyle(.secondary)
+                            }
+                            Text("Issue 標籤：" + value(project, "issue_label") + " · " + (project["publish_draft"] as? Bool == true ? "驗證後交付 Draft PR" : "保留本機審查包"))
+                                .font(.callout).foregroundStyle(.secondary)
+                            Text("測試").font(.caption.bold())
+                            Text(projectCommands(project, "tests")).font(.callout.monospaced()).textSelection(.enabled)
+                            if !(project["setup"] as? [[String]] ?? []).isEmpty {
+                                Text("準備步驟" + (project["setup_network"] as? Bool == true ? "（允許連網）" : "（不連網）")).font(.caption.bold())
+                                Text(projectCommands(project, "setup")).font(.callout.monospaced()).textSelection(.enabled)
+                            }
+                            let paths = project["allowed_paths"] as? [String]
+                            Text("修改範圍：" + (paths?.joined(separator: "、") ?? "repository 內檔案")).font(.caption).foregroundStyle(.secondary)
+                        }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.background, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+            }
+        }.sheet(isPresented: $projectOpen) { AddProjectPanel(model: model) }
+    }
+}
+
+struct AddProjectPanel: View {
+    @ObservedObject var model: DashboardModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var repo = ""
+    @State private var tests = ""
+    @State private var setup = ""
+    @State private var priority = 3
+    @State private var network = false
+    @State private var publish = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("加入專案").font(.title2.bold())
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    TextField("GitHub repository，例如 owner/project", text: $repo).textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("GitHub repository")
+                    Stepper("優先順序 \(priority)（1 最高）", value: $priority, in: 1...5)
+                    Text("測試命令（必填，每行一個參數陣列）").font(.headline)
+                    Text("例如 [\"python3\",\"-m\",\"unittest\"] 或 [\"npm\",\"test\"]；請使用這個專案真正的驗證命令。")
+                        .font(.callout).foregroundStyle(.secondary)
+                    TextEditor(text: $tests).font(.callout.monospaced()).frame(height: 90)
+                        .accessibilityLabel("測試命令")
+                    Text("準備命令（選填，同樣每行一個參數陣列）").font(.headline)
+                    TextEditor(text: $setup).font(.callout.monospaced()).frame(height: 70)
+                        .accessibilityLabel("準備命令")
+                    Toggle("允許準備步驟連網（例如安裝依賴）", isOn: $network)
+                    Toggle("驗證通過後推送分支並建立 Draft PR", isOn: $publish)
+                    Text("啟用後會接收你加入的任務，以及帶 apee:ready 標籤的開放 Issues。命令使用參數陣列，不經 shell 展開；既有專案與命令模板會保留。")
+                        .font(.callout).foregroundStyle(.secondary)
+                    FormFeedback(model: model)
+                }.padding(.trailing, 8)
+            }
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }.disabled(model.busy)
+                Button("儲存並啟用專案") { save() }.buttonStyle(.borderedProminent).tint(.teal)
+                    .disabled(model.busy || repo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || tests.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }.padding(26).frame(width: 700, height: 640)
+            .onAppear { model.message = ""; model.error = false }
+    }
+
+    func save() {
+        do {
+            let testCommands = try commandLines(tests)
+            let setupCommands = try commandLines(setup)
+            guard !testCommands.isEmpty else { return }
+            var args = ["project-add", repo.trimmingCharacters(in: .whitespacesAndNewlines), "--priority", String(priority)]
+            for command in testCommands { args += ["--test", command] }
+            for command in setupCommands { args += ["--setup", command] }
+            if network { args.append("--setup-network") }
+            if publish { args.append("--publish-draft") }
+            model.command(args, success: "專案已儲存並啟用。") { dismiss() }
+        } catch {
+            model.message = error.localizedDescription
+            model.error = true
+        }
+    }
+}
+
+struct TaskPanel: View {
+    @ObservedObject var model: DashboardModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var repo = ""
+    @State private var taskTitle = ""
+    @State private var details = ""
+    var enabled: [[String: Any]] { model.projects.filter { $0["enabled"] as? Bool == true } }
+    var selected: [String: Any] { enabled.first { $0["repo"] as? String == repo } ?? [:] }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("加入開發任務").font(.title2.bold())
+            if enabled.isEmpty {
+                Text("請先在「專案設定」加入並啟用專案。").foregroundStyle(.secondary)
+            } else {
+                Picker("專案", selection: $repo) {
+                    ForEach(Array(enabled.enumerated()), id: \.offset) { _, project in
+                        Text(value(project, "repo")).tag(value(project, "repo"))
+                    }
+                }
+                TextField("任務標題", text: $taskTitle).textFieldStyle(.roundedBorder).accessibilityLabel("任務標題")
+                Text("需求與完成條件").font(.headline)
+                TextEditor(text: $details).frame(minHeight: 160).accessibilityLabel("需求與完成條件")
+                Text(selected["publish_draft"] as? Bool == true ? "驗證通過後依專案設定交付 Draft PR。" : "驗證通過後保留本機審查包。")
+                    .font(.callout).foregroundStyle(.secondary)
+                Text("加入佇列後，背景排程會依優先順序、暫停與預算處理。相同標題與內容不會重複入列。")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            FormFeedback(model: model)
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }.disabled(model.busy)
+                Button("加入佇列") {
+                    model.command(["enqueue", repo, "--title=" + taskTitle, "--body=" + details],
+                                  success: "已核對任務入列；相同內容不會重複加入。") { dismiss() }
+                }.buttonStyle(.borderedProminent).tint(.teal)
+                    .disabled(model.busy || selected.isEmpty || taskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || details.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }.padding(26).frame(width: 680, height: enabled.isEmpty ? 220 : 520)
+            .onAppear {
+                repo = enabled.first?["repo"] as? String ?? ""
+                model.message = ""; model.error = false
+            }
+    }
+}
+
 struct AuditSelection: Identifiable {
     let record: [String: Any]
     var id: String { value(record, "run_id") }
@@ -251,23 +439,35 @@ struct BudgetPanel: View {
     @State private var cached = ""
     @State private var output = ""
     @State private var auditSelection: AuditSelection?
+    @State private var day = ""
+    var usage: [String: Any] { model.history.first { $0["date"] as? String == day } ?? model.budget }
+    var historical: Bool { value(usage, "date") != value(model.budget, "date") }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 Text("預算控制新的模型派工").font(.title2.bold())
                 Text(value(model.budget, "notice")).foregroundStyle(.secondary)
+                Picker("查看用量日期（UTC）", selection: $day) {
+                    Text("今天 · " + value(model.budget, "date")).tag("")
+                    ForEach(Array(model.history.filter { value($0, "date") != value(model.budget, "date") }.enumerated()), id: \.offset) { _, summary in
+                        Text(value(summary, "date")).tag(value(summary, "date"))
+                    }
+                }.frame(maxWidth: 400)
                 HStack(spacing: 24) {
-                    Text("輸入 " + value(model.budget, "input_tokens"))
-                    Text("其中快取 " + value(model.budget, "cached_input_tokens"))
-                    Text("輸出 " + value(model.budget, "output_tokens"))
-                    Text("估算 USD " + value(model.budget, "estimated_usd", fallback: "未定價"))
+                    Text("輸入 " + value(usage, "input_tokens"))
+                    Text("其中快取 " + value(usage, "cached_input_tokens"))
+                    Text("輸出 " + value(usage, "output_tokens"))
+                    Text("估算 USD " + value(usage, "estimated_usd", fallback: "未定價"))
                 }.font(.callout.monospacedDigit())
-                let unknown = model.budget["unknown_runs"] as? [String] ?? []
-                let unpriced = model.budget["unpriced_runs"] as? [String] ?? []
+                let unknown = usage["unknown_runs"] as? [String] ?? []
+                let unpriced = usage["unpriced_runs"] as? [String] ?? []
                 if !unknown.isEmpty || !unpriced.isEmpty {
-                    Text("用量待核對 \(unknown.count) 回合；費用未定價 \(unpriced.count) 回合。啟用相關預算後，這些回合會阻擋新派工。").foregroundStyle(.orange)
+                    Text("用量待核對 \(unknown.count) 回合；費用未定價 \(unpriced.count) 回合。" + (historical ? "" : "啟用相關預算後，這些回合會阻擋新派工。"))
+                        .foregroundStyle(.orange)
                 }
+                if historical { Text("正在查看歷史用量。下方設定套用於目前的派工預算，歷史回合不計入今天。")
+                    .font(.callout).foregroundStyle(.secondary) }
                 Grid(alignment: .leading, horizontalSpacing: 22, verticalSpacing: 14) {
                     GridRow { Text("每日 token 預算"); TextField("留空表示未設定", text: $tokens) }
                     GridRow { Text("每日估算 USD 預算"); TextField("留空表示未設定", text: $dollars) }
@@ -282,8 +482,8 @@ struct BudgetPanel: View {
                     Button("重新載入設定") { load() }
                 }
                 Divider()
-                Text("今日模型回合").font(.headline)
-                let records = model.budget["records"] as? [[String: Any]] ?? []
+                Text("模型回合 · " + value(usage, "date")).font(.headline)
+                let records = usage["records"] as? [[String: Any]] ?? []
                 ForEach(Array(records.enumerated()), id: \.offset) { _, record in
                     HStack {
                         Text(String(value(record, "run_id").prefix(12))).font(.callout.monospaced())

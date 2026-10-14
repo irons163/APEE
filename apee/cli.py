@@ -13,7 +13,7 @@ from .service import Service
 from .store import now
 from .worker import work
 from .budget import Budget
-from .controls import configure, snapshot
+from .controls import add_project as save_project, configure, snapshot
 
 
 def parser():
@@ -79,7 +79,8 @@ def parser():
     settings.add_argument('--settings-json', required=True)
     budget = sub.add_parser('budget', help='核對本機模型用量與預算')
     budgets = budget.add_subparsers(dest='budget_action', required=True)
-    budgets.add_parser('status')
+    budget_status = budgets.add_parser('status')
+    budget_status.add_argument('--date', help='查看指定 UTC 日期的歷史用量，YYYY-MM-DD')
     budgets.add_parser('reconcile')
     manual = budgets.add_parser('record', help='人工核對用量，必須提供原因')
     manual.add_argument('run_id')
@@ -130,18 +131,12 @@ def doctor(config):
 
 def add_project(config, args):
     name = repo_name(args.repo)
-    if name in config.projects:
-        raise ApeeError("專案已有設定，請直接編輯設定檔以保留既有選項。")
     tests = commands([json.loads(s) for s in args.test], "tests", required=True)
     setup = commands([json.loads(s) for s in args.setup], "setup")
-    data = dict(config.data)
-    data["projects"] = [*data.get("projects", []), dict(
+    save_project(config, dict(
         repo=name, enabled=True, priority=args.priority, issue_label="apee:ready",
         tests=tests, setup=setup, setup_network=args.setup_network, publish_draft=args.publish_draft,
-    )]
-    temporary = config.path.with_name(config.path.name + ".tmp")
-    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(config.path)
+    ))
     print(f"已啟用 {name}。設定：{config.path}")
 
 
@@ -184,7 +179,7 @@ def main(argv=None):
         if args.command == "work":
             status = work(engine, args.interval, args.max_cycles, args.max_tasks, args.local_only, notify=emit)
             return int(status["had_errors"])
-        concurrent = args.command in ("status", "show", "report", "pause") or (
+        concurrent = args.command in ("status", "show", "report", "pause", "enqueue") or (
             args.command == 'budget' and args.budget_action == 'status'
         ) or (
             args.command == "resume" and not args.codex
@@ -204,7 +199,7 @@ def main(argv=None):
                     budget.record_manual(args.run_id, dict(input_tokens=args.input_tokens,
                                          cached_input_tokens=args.cached_input_tokens, output_tokens=args.output_tokens),
                                          args.estimated_usd, args.reason)
-                emit(budget.summary())
+                emit(budget.summary(args.date if args.budget_action == 'status' else None))
             elif args.command == "pause":
                 engine.store.set_control("paused", {"at": now(), "reason": args.reason})
                 print("已暫停開始新任務；正在執行的任務仍會完成驗證及原定交付。")

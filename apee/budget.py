@@ -1,6 +1,7 @@
 """Observed usage and admission budgets; no promise of an upstream billing cap."""
 
 import json
+from datetime import date
 from decimal import Decimal, ROUND_UP
 from pathlib import Path
 
@@ -101,9 +102,24 @@ class Budget:
             elif record['status'] == 'pending' and lease_state(self.config.state_dir / 'runs' / record['run_id']) == 'idle':
                 self.finish(dict(id=record['run_id']))
 
-    def summary(self):
-        day = now()[:10]
-        records = [item for item in self.records() if item['at'][:10] == day]
+    def summary(self, day=None):
+        if day is None:
+            day = now()[:10]
+        else:
+            try:
+                if not isinstance(day, str) or date.fromisoformat(day).isoformat() != day:
+                    raise ValueError()
+            except ValueError as exc:
+                raise ApeeError('用量日期必須是 YYYY-MM-DD 格式的 UTC 日期。') from exc
+        return self.summarize(day, [item for item in self.records() if item['at'][:10] == day])
+
+    def history(self):
+        groups = {}
+        for item in self.records():
+            groups.setdefault(item['at'][:10], []).append(item)
+        return [self.summarize(day, groups[day]) for day in sorted(groups, reverse=True)[:30]]
+
+    def summarize(self, day, records):
         known = [item for item in records if item['usage'] is not None]
         unknown = [item['run_id'] for item in records if item['usage'] is None]
         unpriced = [item['run_id'] for item in records if item['estimated_usd'] is None]
