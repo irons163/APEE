@@ -111,6 +111,14 @@ class Config:
             for key, value in prices.items():
                 money(value, "budget.prices_per_million." + key)
         self.budget = budget
+        quality = data.get('quality', {})
+        if (not isinstance(quality, dict) or set(quality) - {'enabled', 'max_repairs'}
+                or type(quality.get('enabled', False)) is not bool):
+            raise ApeeError('quality 設定無法辨識。')
+        repairs = quality.get('max_repairs', 1)
+        if type(repairs) is not int or not 0 <= repairs <= 3:
+            raise ApeeError('quality.max_repairs 必須是 0–3 的整數。')
+        self.quality = dict(enabled=quality.get('enabled', False), max_repairs=repairs)
         projects = data.get("projects", [])
         if not isinstance(projects, list):
             raise ApeeError("projects 必須是陣列。")

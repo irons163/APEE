@@ -32,8 +32,8 @@ def save_config(config, data):
 
 
 def configure(config, changes):
-    if not isinstance(changes, dict) or set(changes) - {'model', 'budget', 'auto_recovery'}:
-        raise ApeeError('只接受 model、budget 與 auto_recovery 設定。')
+    if not isinstance(changes, dict) or set(changes) - {'model', 'budget', 'auto_recovery', 'quality'}:
+        raise ApeeError('只接受 model、budget、auto_recovery 與 quality 設定。')
     latest = latest_config(config)
     return save_config(config, dict(latest.data, **changes))
 
@@ -58,7 +58,8 @@ def snapshot(engine):
                           state=task['state'], state_label=STATES.get(task['state'], task['state']),
                           run_id=task['run_id'], run_dir=run.get('run_dir'),
                           workspace=run.get('workspace'), pr_url=run.get('pr_url'),
-                          error=run.get('error'), automatic_retry=run.get('automatic_retry')))
+                          error=run.get('error'), automatic_retry=run.get('automatic_retry'),
+                          code_review=run.get('code_review'), repairs=len(run.get('repairs', [])), deferred=run.get('deferred')))
         if run.get('pr_url'):
             tasks[-1]['pr_summary'] = review_description(run)
     try:
@@ -77,6 +78,6 @@ def snapshot(engine):
                 daily_attempt_limit=engine.config.daily_attempt_limit,
                 worker_active=engine.store.worker_active(), engine_active=engine.store.engine_active(),
                 paused=engine.store.control('paused'), codex_hold=engine.store.control('codex_hold'),
-                recovery=engine.recovery_status(), auto_recovery=engine.config.auto_recovery,
+                recovery=engine.recovery_status(), auto_recovery=engine.config.auto_recovery, quality=engine.config.quality,
                 budget=budget.summary(), budget_history=budget.history(), budget_blocker=budget.blocker(),
                 model=engine.config.model, service=service)

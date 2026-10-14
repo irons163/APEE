@@ -12,6 +12,7 @@ from .executors import CodexExecutor, ExecutorUnavailable, PatchExecutor, Valida
 from .github import GitHub
 from .leases import attempt_lease, lease_state
 from .process import Runner
+from .quality import CodexReviewer, ValidationFailed, diagnostic_text, model_call, validate_review
 from .reviews import snapshot, summary
 from .store import Store, now
 
@@ -30,12 +31,13 @@ def eligible(issue, project):
 
 
 class Engine:
-    def __init__(self, config, runner=None, github=None, executor=None, validator=None):
+    def __init__(self, config, runner=None, github=None, executor=None, validator=None, reviewer=None):
         self.config = config
         self.runner = runner or Runner()
         self.github = github or GitHub(self.runner)
         self.executor = executor or CodexExecutor(config, self.runner)
         self.validator = validator or Validator(config, self.runner)
+        self.reviewer = reviewer or CodexReviewer(config, self.runner)
         self.store = Store(config.state_dir)
 
     def reload_config(self):
@@ -47,6 +49,8 @@ class Engine:
             self.executor.config = config
         if isinstance(self.validator, Validator):
             self.validator.config = config
+        if isinstance(self.reviewer, CodexReviewer):
+            self.reviewer.config = config
 
     def dispatch_blocker(self, use_codex=True):
         paused = self.store.control("paused")
@@ -263,7 +267,8 @@ class Engine:
         run = dict(id=run_id, task_id=task_id, repo=task["repo"], started_at=now(),
                    workspace=str(workspace), run_dir=str(run_dir), project=project, spec=spec,
                    branch=f"apee/task-{run_id[:16]}", lease_version=1,
-                   execution_backend='imported_patch' if patch is not None else 'codex')
+                   execution_backend='imported_patch' if patch is not None else 'codex',
+                   quality_required=self.config.quality['enabled'])
         with self.runner.lease(run_dir):
             return self._execute(task, project, run, local_only, patch)
 
@@ -298,17 +303,10 @@ class Engine:
                 if patch is None:
                     budget.finish(run)
             self._assert_base(workspace, run)
-            self.runner.git(workspace, "add", "--all")
-            self._check_paths(workspace, project)
-            tree_before = self.runner.git(workspace, "write-tree")
-            if tree_before == self.runner.git(workspace, "rev-parse", "HEAD^{tree}"):
-                raise ApeeError("執行器沒有產生程式變更，未建立待審成果。")
-            self.store.transition(task_id, "testing", run=run)
-            run["tests"] = self.validator.check(workspace, run_dir, project["tests"], "test")
-            self._assert_base(workspace, run)
-            self.runner.git(workspace, "add", "--all")
-            if self.runner.git(workspace, "write-tree") != tree_before:
-                raise ApeeError("測試改動了待交付內容，驗證版本不一致；請檢查產生的檔案。")
+            if run['quality_required']:
+                self._verify_quality(run, project)
+            else:
+                self._verify_tests(run, project)
             self.runner.git(workspace, "diff", "--cached", "--check")
             self.runner.git(workspace, "diff", "--cached", "--binary", log=run_dir / "changes.patch")
             run["diff_stat"] = self.runner.git(workspace, "diff", "--cached", "--stat")
@@ -318,6 +316,11 @@ class Engine:
             run["verified_at"] = now()
             (run_dir / "review.md").write_text(self.review_text(run), encoding="utf-8")
             self.store.transition(task_id, "ready", run=run)
+        except DispatchBlocked as exc:
+            run['error'] = str(exc)
+            run['deferred'] = exc.reason
+            self.store.transition(task_id, 'waiting', exc.reason, run=run)
+            raise
         except ExecutorUnavailable as exc:
             run["error"] = str(exc)
             run["executor_error"] = exc.reason
@@ -333,6 +336,77 @@ class Engine:
         if project["publish_draft"] and not local_only:
             return self.publish(task_id)
         return run
+
+    def _candidate_tree(self, run, project):
+        workspace = Path(run['workspace'])
+        self._assert_base(workspace, run)
+        self.runner.git(workspace, "add", "--all")
+        self._check_paths(workspace, project)
+        tree_before = self.runner.git(workspace, "write-tree")
+        if tree_before == self.runner.git(workspace, "rev-parse", "HEAD^{tree}"):
+            raise ApeeError("執行器沒有產生程式變更，未建立待審成果。")
+        return tree_before
+
+    def _verify_tests(self, run, project, directory=None):
+        workspace = Path(run['workspace'])
+        tree_before = self._candidate_tree(run, project)
+        self.store.transition(run['task_id'], "testing", run=run)
+        error = None
+        try:
+            run["tests"] = self.validator.check(workspace, directory or Path(run['run_dir']), project["tests"], "test")
+        except ApeeError as exc:
+            error = exc
+        self._assert_base(workspace, run)
+        self.runner.git(workspace, "add", "--all")
+        if self.runner.git(workspace, "write-tree") != tree_before:
+            raise ApeeError("測試改動了待交付內容，驗證版本不一致；請檢查產生的檔案。")
+        if error:
+            raise ValidationFailed(str(error)) from error
+        return tree_before
+
+    def _verify_quality(self, run, project):
+        run['verification_rounds'] = []
+        for index in range(self.config.quality['max_repairs'] + 1):
+            directory = Path(run['run_dir']) / 'quality' / str(index)
+            directory.mkdir(parents=True, exist_ok=True)
+            observation = dict(round=index, at=now(), tests_passed=False)
+            failure = None
+            try:
+                tree = self._verify_tests(run, project, directory)
+                observation.update(tree=tree, tests_passed=True)
+            except ValidationFailed as exc:
+                failure = dict(kind='tests', message=str(exc), logs=[dict(name=p.name, text=diagnostic_text(p.read_text(errors='replace')))
+                              for p in sorted(directory.glob('*.log'))[:5]])
+                observation['failure'] = failure
+            if failure is None:
+                review = model_call(self, run, f'review-{index}',
+                    lambda folder: self.reviewer.review(Path(run['workspace']), folder, run['spec'], project, run['base_sha']))
+                validate_review({key: review.get(key) for key in ('approved', 'summary', 'findings')},
+                                Path(run['workspace']), run['base_sha'], self.runner)
+                self._assert_base(Path(run['workspace']), run)
+                self.runner.git(Path(run['workspace']), 'add', '--all')
+                if self.runner.git(Path(run['workspace']), 'write-tree') != tree:
+                    raise ApeeError('獨立審查改動了內容，未交付。')
+                review.update(tree=tree, round=index)
+                run['code_review'] = review
+                observation['review'] = review
+                if review['approved']:
+                    run['verification_rounds'].append(observation)
+                    self.store.save_run(run)
+                    return
+                failure = dict(kind='code_review', findings=review['findings'], summary=review['summary'])
+                observation['failure'] = failure
+            run['verification_rounds'].append(observation)
+            self.store.save_run(run)
+            if index >= self.config.quality['max_repairs']:
+                raise ApeeError('測試或獨立審查未通過，已達有限修復上限；保留成果待處理。')
+            repair = dict(run['spec'], body=run['spec']['body'] + '\n\n修復以下已核對問題，保留原完成條件與測試，不得削弱檢查：\n'
+                          + json.dumps(failure, ensure_ascii=False))
+            self.store.transition(run['task_id'], 'running', run=run)
+            result = model_call(self, run, f'repair-{index + 1}',
+                                lambda folder: self.executor.execute(Path(run['workspace']), folder, repair, project))
+            run.setdefault('repairs', []).append(dict(round=index + 1, agent=result, at=now()))
+            self.store.save_run(run)
 
     def _assert_base(self, workspace, run):
         if self.runner.git(workspace, "rev-parse", "HEAD") != run["base_sha"]:
@@ -366,6 +440,10 @@ class Engine:
             lines += [f"- 通過：`{json.dumps(result['command'], ensure_ascii=False)}`"]
         lines += ["", f"驗證提交：`{run['commit']}`", f"起始提交：`{run['base_sha']}`",
                   "", "以上結果表示指定的測試命令結束碼為 0；產品行為與程式品質仍需審查。", ""]
+        if run.get('quality_required'):
+            review = run['code_review']
+            lines += ['## 獨立模型審查', '', review['summary'], '',
+                      f"審查內容樹：`{review['tree']}`；已執行 {len(run.get('repairs', []))} 次有限修復。", '']
         return "\n".join(lines)
 
     def publish(self, task_id):
@@ -384,6 +462,11 @@ class Engine:
         workspace = Path(run["workspace"])
         if not run.get("tests") or not all(t.get("passed") is True for t in run["tests"]):
             raise ApeeError("缺少完整測試結果。")
+        if run.get('quality_required'):
+            review = run.get('code_review', {})
+            if (review.get('approved') is not True or any(finding['priority'] <= 2 for finding in review.get('findings', []))
+                    or review.get('tree') != self.runner.git(workspace, 'rev-parse', run['commit'] + '^{tree}')):
+                raise ApeeError('缺少對應內容版本的獨立審查，未交付。')
         if self.runner.git(workspace, "rev-parse", "HEAD") != run["commit"] or self.runner.git(workspace, "status", "--porcelain"):
             raise ApeeError("驗證後工作副本已變更，未上傳。")
         self._check_paths(workspace, self.config.project(task["repo"]), [run["base_sha"], run["commit"]])
@@ -490,6 +573,7 @@ class Engine:
             task_id = self.next_task()
             if not task_id:
                 break
+            before = self.store.total_attempts()
             try:
                 run = self.execute(task_id, local_only)
                 result["runs"].append({"task": task_id, "state": self.store.task(task_id)["state"],
@@ -498,10 +582,10 @@ class Engine:
                 result["blocked"] = exc.reason
                 break
             except ExecutorUnavailable as exc:
-                result["attempts"] += 1
                 result["blocked"] = exc.reason
                 break
             except ApeeError as exc:
                 result["errors"].append({"task": task_id, "error": str(exc)})
-            result["attempts"] += 1
+            finally:
+                result['attempts'] += self.store.total_attempts() - before
         return result
