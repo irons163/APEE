@@ -5,6 +5,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .reviews import summary
+from .budget import Budget
 
 
 STATES = {
@@ -47,6 +48,17 @@ def render(engine):
                   f"錯誤記錄：[agent-events.log](<{hold['log']}>)", ""]
     if attempts["used"] >= engine.config.daily_attempt_limit:
         lines += ["**已達每日嘗試上限**：下個 UTC 日期才會恢復派工。", ""]
+    budget = Budget(engine.config, engine.store)
+    usage = budget.summary()
+    lines += [f"今日已核對 {usage['tokens']} tokens；用量不明 {len(usage['unknown_runs'])} 回合。",
+              "估算費用（USD）：" + (usage['estimated_usd'] if usage['estimated_usd'] is not None else '未定價') + '。',
+              '預算在開始新模型回合前檢查，進行中的回合可能超額。', '']
+    blocked = budget.blocker()
+    if blocked:
+        lines += ['**用量預算停止派工**：' + cell(blocked['message']), '']
+    policy = engine.config.auto_recovery
+    lines += ['自動恢復：' + (f"已啟用；停止觀察 {policy['cooldown_seconds']} 秒，每項任務最多自動重試 {policy['max_retries']} 次。"
+                              if policy['enabled'] else '未啟用。'), '']
     worker = engine.store.control("worker")
     if worker:
         lines += [f"最近連續執行：已檢查 {worker['cycles']} 輪，開始 {worker['attempts']} 次嘗試；"
@@ -65,6 +77,14 @@ def render(engine):
         reasons = list(run.get("pr_status", {}).get("attention", []))
         if run.get("pr_refresh_error"):
             reasons.insert(0, "無法更新 PR 狀態：" + run["pr_refresh_error"]["message"])
+        if task['state'] == 'interrupted' and run.get('recovery', {}).get('source') == 'automatic':
+            retries = sum(bool(old.get('automatic_retry', {}).get('scheduled')) for old in engine.store.runs(task['id']))
+            if not policy['enabled']:
+                reasons.append('自動恢復已停用；檢查保留的嘗試後，再決定是否手動 retry。')
+            elif retries >= policy['max_retries']:
+                reasons.append('已達自動重試上限；檢查保留的嘗試後，再決定是否手動 retry。')
+            else:
+                reasons.append('已自動標記中斷；等待派工容量或用量核對後重新入列。')
         if task["id"] in recovery:
             item = recovery[task["id"]]
             if item["lease"] == "active":
@@ -119,8 +139,9 @@ def render(engine):
               "- Draft PR 可依專案設定自動交付；合併、發佈與部署仍由既有流程負責。",
               "- cycle／work 每輪讀取 PR 近況；模型派工暫停時仍可更新。status／report 顯示上次觀察，不會連網。",
               "- 未回報檢查不算通過；GitHub 狀態與本機驗證分開保存。已合併表示 PR 狀態，不表示產品成效。",
-              "- work 提供有輪數與任務上限的前景連續模式；尚未安裝背景常駐服務。",
+              "- work 提供有限前景模式；macOS 背景排程由 service 管理，桌面 app 提供同一份本機狀態與操作。",
               "- 用量或登入問題會暫停 Codex 派工，保存原因，等待明確恢復；不會自動重試開發失敗。",
+              "- 自動恢復只處理已確認停止的新版模型嘗試，保留舊成果並限制重試次數。",
               "- 每項任務分別保存開發、測試與遠端交付結果，方便核對實際完成的階段。", ""]
     path = engine.config.state_dir / "overview.md"
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,

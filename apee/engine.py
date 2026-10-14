@@ -4,7 +4,9 @@ import hashlib
 import json
 import uuid
 from pathlib import Path
+from datetime import datetime
 
+from .budget import Budget
 from .config import ApeeError, Config, DispatchBlocked
 from .executors import CodexExecutor, ExecutorUnavailable, PatchExecutor, Validator
 from .github import GitHub
@@ -59,6 +61,9 @@ class Engine:
         hold = self.store.control("codex_hold") if use_codex else None
         if hold:
             return hold
+        budget = Budget(self.config, self.store).blocker() if use_codex else None
+        if budget:
+            return budget
         attempts = self.store.attempts_today()
         if attempts["used"] >= self.config.daily_attempt_limit:
             return dict(attempts, kind="daily_limit", limit=self.config.daily_attempt_limit,
@@ -96,7 +101,7 @@ class Engine:
                                    workspace=None))
         return result
 
-    def recover(self, task_id, legacy=False):
+    def recover(self, task_id, legacy=False, automatic=False, observation=None):
         task = self.store.task(task_id)
         run = self.store.run(task_id)
         if task["state"] == "publishing":
@@ -111,6 +116,9 @@ class Engine:
 
         def mark_interrupted(proof):
             run["recovery"] = dict(at=now(), previous_state=task["state"], proof=proof)
+            if automatic:
+                run["recovery"]["source"] = "automatic"
+                run["recovery"]["observation"] = observation
             run.setdefault("error", "執行程序已停止；工作副本已保留，可明確 retry 後使用新的 checkout。")
             self.store.transition(task_id, "interrupted", {
                 "reason": "recovered_abandoned_attempt", "previous_state": task["state"], "proof": proof,
@@ -125,6 +133,78 @@ class Engine:
             mark_interrupted("legacy_manually_checked")
         return dict(task=task_id, state="interrupted", run_id=run["id"],
                     workspace=run["workspace"], next_action="retry")
+
+    def auto_recover(self, at=None):
+        policy = self.config.auto_recovery
+        if not policy['enabled'] or self.store.control('paused'):
+            if self.store.control('recovery_observations'):
+                self.store.set_control('recovery_observations', None)
+            return []
+        at = at or now()
+        instant = datetime.fromisoformat(at)
+        observations = self.store.control('recovery_observations') or {}
+        kept, results = {}, []
+        for task in self.store.tasks():
+            if len(results) >= policy['max_per_cycle']:
+                if task['run_id'] in observations:
+                    kept[task['run_id']] = observations[task['run_id']]
+                continue
+            if not task['run_id'] or not self.config.projects.get(task['repo'], {}).get('enabled'):
+                continue
+            run = self.store.run(task['id'])
+            if (type(run.get('lease_version')) is not int or run['lease_version'] != 1
+                    or run.get('execution_backend') != 'codex'):
+                continue
+            run_dir = self.config.state_dir / 'runs' / run['id']
+            if run['run_dir'] != str(run_dir) or run['workspace'] != str(run_dir / 'repo'):
+                continue
+            if any(lease_state(self.config.state_dir / 'runs' / old['id']) in ('active', 'unreadable')
+                   for old in self.store.runs(task['id'])):
+                continue
+            recovered = False
+            if task['state'] in RECOVERABLE_STATES:
+                if lease_state(run_dir) != 'idle':
+                    continue
+                first = observations.get(run['id'], at)
+                try:
+                    elapsed = (instant - datetime.fromisoformat(first)).total_seconds()
+                except (ValueError, TypeError):
+                    first, elapsed = at, 0
+                if elapsed < 0:
+                    first, elapsed = at, 0
+                if elapsed < policy['cooldown_seconds']:
+                    kept[run['id']] = first
+                    continue
+                try:
+                    self.recover(task['id'], automatic=True,
+                                 observation=dict(idle_since=first, cooldown_seconds=policy['cooldown_seconds'], checked_at=at))
+                except (BusyError, OSError):
+                    continue
+                run = self.store.run(task['id'])
+                task = self.store.task(task['id'])
+                recovered = True
+            if task['state'] != 'interrupted' or run.get('recovery', {}).get('source') != 'automatic':
+                continue
+            if run.get('automatic_retry', {}).get('scheduled'):
+                continue
+            count = sum(bool(old.get('automatic_retry', {}).get('scheduled')) for old in self.store.runs(task['id']))
+            allowed = (count < policy['max_retries'] and not self.store.control('codex_hold')
+                       and not Budget(self.config, self.store).blocker()
+                       and self.store.attempts_today()['used'] < self.config.daily_attempt_limit)
+            if allowed:
+                try:
+                    with attempt_lease(run_dir, create=False):
+                        run['automatic_retry'] = dict(scheduled=True, number=count + 1, at=at)
+                        self.store.transition(task['id'], 'queued',
+                                              dict(reason='automatic_recovery', run_id=run['id'], retry_number=count + 1), run=run)
+                except (BusyError, OSError):
+                    allowed = False
+            if recovered or allowed:
+                results.append(dict(task=task['id'], run_id=run['id'], retried=bool(allowed),
+                                    state='queued' if allowed else 'interrupted'))
+        if kept != observations:
+            self.store.set_control('recovery_observations', kept or None)
+        return results
 
     def retry(self, task_id):
         task = self.store.task(task_id)
@@ -182,7 +262,8 @@ class Engine:
         spec = task["spec"]
         run = dict(id=run_id, task_id=task_id, repo=task["repo"], started_at=now(),
                    workspace=str(workspace), run_dir=str(run_dir), project=project, spec=spec,
-                   branch=f"apee/task-{run_id[:16]}", lease_version=1)
+                   branch=f"apee/task-{run_id[:16]}", lease_version=1,
+                   execution_backend='imported_patch' if patch is not None else 'codex')
         with self.runner.lease(run_dir):
             return self._execute(task, project, run, local_only, patch)
 
@@ -208,7 +289,14 @@ class Engine:
                 raise ApeeError("依賴準備改動了版本控制內容；請先修正 setup 設定。")
             self.store.transition(task_id, "running", run=run)
             executor = PatchExecutor(self.runner, patch) if patch is not None else self.executor
-            run["agent"] = executor.execute(workspace, run_dir, spec, project)
+            budget = Budget(self.config, self.store)
+            if patch is None:
+                budget.begin(run)
+            try:
+                run["agent"] = executor.execute(workspace, run_dir, spec, project)
+            finally:
+                if patch is None:
+                    budget.finish(run)
             self._assert_base(workspace, run)
             self.runner.git(workspace, "add", "--all")
             self._check_paths(workspace, project)
@@ -382,6 +470,10 @@ class Engine:
         result["pr_updates"] = reviews["changes"]
         result["review_checked"] = reviews["checked"]
         result["errors"].extend(reviews["errors"])
+        Budget(self.config, self.store).reconcile()
+        recovered = self.auto_recover()
+        if recovered:
+            result['recoveries'] = recovered
         blocker = self.dispatch_blocker()
         if blocker:
             result["blocked"] = blocker

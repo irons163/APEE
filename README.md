@@ -2,7 +2,7 @@
 
 把多個 GitHub 專案的開發任務排進同一個工作循環：**取得任務 → 獨立工作副本 → 自動開發 → 執行測試 → 交付待審變更**。
 
-這是 **0.5.0 引擎原型**。已有可執行的命令列、持久任務佇列、有限的連續執行模式、macOS 背景排程、Codex 執行介面、原生 sandbox 測試、Draft PR 交付、交付後狀態追蹤與異常中斷恢復。2026-10-13 已透過 [APEE PR #1](https://github.com/irons163/APEE/pull/1) 完成一次真實「模型自主修改 → 獨立驗證 → 提交 → Draft PR」驗收，修正設定搬移後的驗證路徑。較早的 [codex-pool-manager PR #9](https://github.com/irons163/codex-pool-manager/pull/9) 則驗證外部修補的套用與交付。詳見 [驗證紀錄](docs/VALIDATION.md)。
+這是 **0.6.1 本機原型**。已有命令列與原生 macOS 桌面介面、持久任務佇列、有限的連續執行與背景排程、Codex 執行介面、獨立驗證、Draft PR 交付、成果追蹤、有上限的自動中斷恢復，以及依已記錄用量控制新派工的 token／估算費用預算。2026-10-13 已透過 [APEE PR #1](https://github.com/irons163/APEE/pull/1) 完成一次真實「模型自主修改 → 獨立驗證 → 提交 → Draft PR」驗收，修正設定搬移後的驗證路徑。較早的 [codex-pool-manager PR #9](https://github.com/irons163/codex-pool-manager/pull/9) 則驗證外部修補的套用與交付。詳見 [驗證紀錄](docs/VALIDATION.md)。
 
 ## 第一版提供什麼
 
@@ -18,6 +18,9 @@
 - 可安裝目前使用者的 macOS 背景排程，每次喚醒只跑一輪，沿用暫停、執行鎖與每日嘗試上限；提供預覽、安裝、啟停、狀態與移除指令。
 - 遇到已辨識的 Codex 額度、請求頻率或登入錯誤，保存原因並停止新的模型派工；重新開啟仍保留暫停原因。
 - 主程序意外結束後，未完成嘗試會阻擋新的開發派工；確認執行鎖已釋放後，可保留原工作副本並明確恢復為中斷狀態，再使用新的 checkout 重試。
+- 可明確啟用自動恢復：新版模型嘗試的鎖持續釋放達觀察期後，每項任務最多自動重試指定次數，每輪處理數另有上限。
+- 保存 Codex JSONL 用量、模型與設定單價快照；依 UTC 日期檢查 token／估算 USD 預算，用量不明時停止新的模型派工。
+- 原生桌面介面顯示任務、PR、用量與排程，提供暫停、恢復、預算設定、人工用量核對與恢復政策。
 - 追蹤已交付 PR 的 GitHub 檢查、審查要求、衝突、合併及關閉狀態；總覽集中列出需處理的成果。
 
 ## 執行需求
@@ -25,6 +28,7 @@
 - macOS、Python 3.9+、Git、已登入的 GitHub CLI，以及已登入的 Codex CLI。
 - 2026-10-13 本機驗證版本為 Codex CLI `0.162.0-alpha.17.2`、GitHub CLI `2.102.0`、Python `3.9.6`。需支援 `codex exec --ignore-user-config` 及 `codex sandbox --permission-profile`。
 - 各專案的開發工具須在 `PATH` 中可執行；例如 Node、npm、Swift 或 Python。
+- 桌面 app 需要 macOS 14+；編譯需要可用的 Xcode Command Line Tools／Swift 編譯器。引擎本身不需要 Swift。
 
 APEE 本身只使用 Python 標準函式庫，從此目錄即可執行，不需要安裝套件：
 
@@ -90,7 +94,7 @@ python3 -m apee work --interval 300 --max-cycles 12 --max-tasks 5
 
 上述數字也是預設值。加上 `--local-only` 可讓所有成果留在本機。輪數包含沒有任務、暫停或被其他執行器占用的輪次；嘗試數包含失敗。達到任一上限即結束，不會自動安裝背景服務或在關閉視窗後重新啟動。Ctrl-C 可停止連續模式；SIGTERM 使用相同清理流程。
 
-設定中的 `daily_attempt_limit` 預設為 10，限制同一份狀態資料每天開始的嘗試數，包含 `run`、`cycle`、`work` 與外部 patch。以 **UTC 日期** 計算，台灣時間上午 8 點換日；失敗仍計入，重啟不歸零。這是工作量限制，不是 token 或費用上限。
+設定中的 `daily_attempt_limit` 預設為 10，限制同一份狀態資料每天開始的嘗試數，包含 `run`、`cycle`、`work` 與外部 patch。以 **UTC 日期** 計算，台灣時間上午 8 點換日；失敗仍計入，重啟不歸零。另可設定下方的模型用量預算。
 
 從另一個視窗控制派工：
 
@@ -153,6 +157,58 @@ python3 -m apee --config /absolute/path/settings.json service uninstall
 
 `service status` 顯示是否已安裝、載入、正在執行、是否需要重新安裝，以及最近一次程序結束碼。這些是排程狀態；任務成果使用 `status`、`show` 與總覽確認。標準輸出與錯誤位於 `state_dir/service/stdout.log`、`stderr.log`，路徑也會由服務狀態回報。
 
+## 桌面介面
+
+從預定長期保留的程式目錄與設定檔編譯並開啟 app：
+
+```sh
+python3 -B -m apee --config /absolute/path/settings.json desktop build --open
+```
+
+預設輸出為 `~/Applications/APEE.app`，可用 `--output /absolute/path/APEE.app` 指定新位置。已存在的輸出不會覆寫。這是本機 ad-hoc 簽署的 SwiftUI app，尚未提供公證與對外發佈安裝包。app 固定編譯時的 Python、程式與設定路徑，搬移後應重新編譯；正式背景環境宜放在 `~/Library/Application Support/APEE` 等可存取位置。
+
+app 與 CLI 共用同一份 SQLite、設定、執行鎖與背景服務。每十秒更新本機快照，不會因此呼叫模型或查 GitHub；「更新 GitHub 近況」才會執行遠端查詢。可以查看任務與 PR、暫停／恢復派工、啟停已安裝的背景排程，以及修改預算與恢復政策。首次安裝服務及不明交付核對仍由 CLI 操作。
+
+0.6.1 的「專案設定」可查看已設定專案、原始測試／準備命令、修改範圍及交付方式。「加入專案」接受 repository、優先順序與每行一個 JSON 參數陣列的命令，測試必填；準備步驟連網與自動交付 Draft PR 需明確勾選。新設定會完整驗證後以 0600 權限原子儲存，既有政策與 `{config_dir}` 模板保留；既有專案不覆寫，修改它仍需編輯設定檔。
+
+工作總覽的「加入任務」可選擇啟用專案，輸入標題、需求與完成條件。加入時只寫入持久佇列，不直接呼叫模型；背景排程在後續輪次依暫停、容量與預算處理。即使引擎正在執行其他任務，也能加入新任務；相同內容只保留一筆。沒有啟用專案時會先提示設定，儲存失敗時表單與輸入保留；已有執行紀錄的任務可直接開啟記錄目錄。
+
+「用量與預算」的數值預設留空，代表未啟用該項限制；儲存前後會保留專案與命令模板。模型名稱與三項單價由使用者明確設定，不會猜測訂閱費用。日期選單顯示今天與最近 30 個有紀錄的 UTC 日期，可以開啟原始用量記錄並人工核對；已有完整 token 用量的欄位不能覆寫。查看或核對歷史回合不會把它移入今天的預算，下方設定始終修改目前的派工政策。
+
+`python3 -B -m apee snapshot` 提供同一份本機 JSON，適合其他本機介面整合；不帶人類可讀的總覽結尾。
+
+快照包含 `projects`（保留原始命令模板）及 `budget_history`（最近 30 個有紀錄日期）。更早日期可用 `python3 -B -m apee budget status --date 2026-10-13` 查詢；這些讀取都不修改用量帳冊或派工日期。
+
+## Token 與估算費用預算
+
+可以只設定 token 預算，例如：
+
+```sh
+python3 -B -m apee configure --settings-json '{"budget":{"daily_tokens":1000000}}'
+python3 -B -m apee budget status
+python3 -B -m apee budget reconcile
+```
+
+`configure` 只接受 `model`、`budget` 與 `auto_recovery`，在取得執行鎖並驗證完整設定後原子儲存。傳入的 `budget` 會取代整個預算物件；`{"budget":{}}` 清除預算。`daily_tokens` 為正整數，最多 `10^12`。`daily_estimated_usd` 是最多九位小數的正十進位字串，設定時須同時有明確的 `model` 與 `budget.prices_per_million`。單價物件恰含 `input`、`cached_input`、`output` 三個非負十進位字串，單位都是每百萬 token 的 USD。
+
+模型開始前先保存待核對用量；結束後從 `agent-events.log` 的 `turn.completed.usage` 讀取輸入、快取輸入與輸出。總 token 為輸入加輸出，快取是輸入的一部分，不重複加總；reasoning 已包含在輸出，不另加。金額以非快取輸入、快取輸入及輸出分別乘單價，使用十進位運算並向上保留九位小數。每次回合保存當時的模型與單價，之後更改設定不會回算既有費用。
+
+以**模型開始的 UTC 日期**歸戶，跨日回合仍歸原開始日；舊版紀錄只能依原嘗試開始日匯入。這是本狀態目錄內 APEE 已記錄的用量，不包含其他 Codex 對話，也不代表整個帳號的訂閱額度、credits 或實際帳單。
+
+**預算在開始新的模型回合前檢查；進行中的回合可能超額。** Codex 在回合完成時才回報完整用量，因此這不是上游硬性 token／帳單上限。達到任一已設定上限即阻止後續模型派工；暫停不會自動解除 Codex 的服務額度暫停。仍可追蹤 PR、交付已驗證成果，以及套用不呼叫模型的外部 patch。
+
+缺少記錄、失敗／未完成的事件流或無法辨識的用量會保留為未知；啟用任一預算後，未知用量會阻擋當日新模型回合。費用預算另外要求當日回合都有可核對的估價；沒有模型／單價的舊紀錄及未支援定價的非零 cache-write 用量不會當成零。`budget reconcile` 匯入舊記錄，並只在嘗試鎖釋放後核對待完成項目；`cycle` 會自動執行相同核對。
+
+取得實際依據後，可從桌面或 CLI 保存人工核對與原因，例如：
+
+```sh
+python3 -B -m apee budget record RUN_ID \
+  --input-tokens 100 --cached-input-tokens 20 --output-tokens 10 \
+  --estimated-usd 0.01 --reason '依已核對的供應商用量紀錄補登'
+```
+
+上例數字僅示範格式。人工核對需先確認嘗試鎖已釋放；舊版完整紀錄可在沒有租約時補登費用。完整且已知的 token 數不接受改寫，原值與前次核對都會保留。省略金額仍屬未定價，不能解除費用預算的阻擋。
+
 ## 追蹤已交付的成果
 
 ```sh
@@ -200,6 +256,20 @@ python3 -m apee run 'your-account/your-project#123' --local-only
 
 0.3 及更早版本的嘗試沒有執行鎖紀錄。人工確認相關程序全部結束後，可明確使用 `recover TASK_ID --legacy`，紀錄會標示人工確認來源。這個選項僅適用舊版資料；新版的鎖遺失、無法讀取或仍被持有時，仍需先檢查及處理。
 
+### 有上限的自動恢復
+
+預設關閉。可從桌面啟用，或明確設定：
+
+```sh
+python3 -B -m apee configure --settings-json '{"auto_recovery":{"enabled":true,"max_retries":1,"cooldown_seconds":300,"max_per_cycle":1}}'
+```
+
+每輪先核對用量，再觀察啟用專案中停在 `preparing`、`running` 或 `testing` 的新版 Codex 嘗試。只有執行來源、租約版本與實際工作目錄一致，且所有歷史嘗試均沒有仍被持有或無法讀取的鎖，才處理。必須連續觀察鎖釋放至少 `cooldown_seconds`；重獲鎖、暫停、停用或時間倒退會重新計時。背景每五分鐘檢查時，恢復時間也受輪詢間隔影響。
+
+確認後記為 `interrupted`，保存自動來源與觀察證據，再於容量允許時重新入列；下一次執行使用全新 checkout。每項任務的 `max_retries` 是跨重新啟動的累計上限，允許 0–5 次；0 只標記中斷。`cooldown_seconds` 允許 60–86400 秒，`max_per_cycle` 允許 1–20 項。自動重新入列不另計開發嘗試，真正開始時仍受每日嘗試、worker 總嘗試與模型預算限制。
+
+一般開發失敗、外部 patch、來源不明或租約遺失的舊版資料不自動重試；`publishing` 仍由 `publish` 核對。Codex 暫停、用量未知或預算不足時保留已中斷成果，容量恢復後才可在後續輪次入列；使用者暫停時不改任務。每次恢復都保留原 checkout 與記錄，達到重試上限後交由人工處理。
+
 ## 看成果與處理失敗
 
 ```sh
@@ -242,22 +312,26 @@ APEE_NATIVE_TESTS=1 python3 -B -m unittest discover -s tests -v
 
 背景服務測試涵蓋設定預覽、環境與登入檢查、背景存取失敗、登錄回應不明、啟停與移除失敗、狀態目錄變更、重複設定及資料保留。`APEE_NATIVE_TESTS=1` 另以隔離的程式、空專案設定與狀態目錄，實際登錄 launchd、執行一輪、核對 SQLite，再停止並移除；不會啟動正式專案排程。
 
+0.6 另外驗證實際 SIGKILL 後的觀察期、自動恢復的累計上限、重啟後的未完成入列、暫停與容量阻擋，以及原生 sandbox 子程序存活時不恢復。用量測試涵蓋快取去重、十進位估價、失敗仍計用量、未知用量阻擋、單價快照、UTC 歸戶、舊版匯入與人工稽核。設定測試核對無效值不改檔、命令模板保留與單一 JSON 快照；原生桌面測試實際編譯、簽署並由 app 的診斷入口讀取隔離後端。測試單價與模型用量使用明確的合成資料。
+
 PR 追蹤驗證檢查狀態分類、版本漂移、要求修改、衝突、合併／關閉／重開、連線故障與恢復、跨重啟保存、觀察去重及有上限的輪詢。故障情境使用 GitHub 替身；真實試點則另有實際讀取證據。
 
 ## 目前限制
 
-- 目前是循序執行的本機引擎，支援有限的前景連續模式與 macOS 使用者背景排程；沒有桌面介面、跨主機 worker、功能探索或自動產品決策。
+- 目前是循序執行的本機引擎，提供有限的前景連續模式、macOS 使用者背景排程與原生桌面控制；尚無跨主機 worker、功能探索或自動產品決策。
 - 自主範圍為執行已提供的任務與追蹤已交付成果。尚無獨立模型程式碼審查、GitHub CI 自動修復或自動 merge。
 - 只接 GitHub.com 同一 repository 的任務分支；尚未支援 Enterprise、fork PR 或 submodules 的特殊準備流程。
 - 專案準備與測試使用 Codex sandbox，允許 checkout 及系統暫存目錄寫入。這不是容器／VM；適用於你信任的程式庫，不能當作任意不可信程式碼的隔離服務。
 - 模型沿用 CLI 登入，忽略個人 `config.toml` 並明確指定 workspace-write；未指定 `model` 時使用 CLI 預設。專案與管理政策仍可能限制執行。原始碼與任務內容會交由設定的模型服務處理。
-- 目前限制每次模型時間、每個命令時間、每輪／連續執行總嘗試數與每日嘗試數，尚未提供可保證的 token／費用上限。失敗不會無限重試。
+- 模型預算控制後續派工，進行中的回合可能超額；估算費用不等於帳單，未設定數值時不啟用限制。另限制每次模型時間、每個命令時間與嘗試數。
 - Codex 全域暫停依據已辨識的結構化服務錯誤；未知錯誤保存為一般失敗。跨日不會自動解除模型服務的暫停，需要明確恢復。
-- 正常中斷會記錄；若主機斷電或程序被強制殺死，未完成狀態會保留。`recover` 依據本機執行鎖明確恢復狀態；殘留程序需先結束，工作副本及原紀錄會保留。尚無跨主機租約、自動重試或任意背景程序追蹤。
+- 正常中斷會記錄；強制終止後可手動恢復，或明確啟用有上限的自動恢復。依據本機可繼承的執行鎖判定，原工作副本及紀錄保留；尚無跨主機租約或任意脫離程序群組的背景程序追蹤。
 - discovery 最多讀取 1,000 個 repositories；Issue 同步使用分頁。
 
 ## 設計與介面依據
 
 產品方向見 [docs/PRODUCT.md](docs/PRODUCT.md)。Codex 執行介面依據 [官方 non-interactive mode 文件](https://learn.chatgpt.com/docs/non-interactive-mode) 與本機 CLI help；測試隔離依據 [permission profiles 文件](https://learn.chatgpt.com/docs/permissions)。PR 交付使用 [GitHub CLI 的 Draft PR 介面](https://cli.github.com/manual/gh_pr_create)。
+
+模型用量欄位依據同一份 non-interactive 文件的 `turn.completed.usage`。訂閱額度、credits 與費用差異參照 [官方 pricing 文件](https://learn.chatgpt.com/docs/pricing)；APEE 不內建或猜測費率，使用明確設定的單價快照。
 
 PR 追蹤使用 [GitHub CLI 的 PR JSON 欄位](https://cli.github.com/manual/gh_pr_view)，並以 GitHub GraphQL schema 的 `CheckConclusionState`、`CheckStatusState`、`StatusState` 核對檢查分類；與 [GitHub CLI 的檢查結果分類](https://cli.github.com/manual/gh_pr_checks) 一樣區分通過、失敗、等待、略過與取消。
