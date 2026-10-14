@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from apee.config import ApeeError
 from apee.notifications import Notifications, deliver
+from apee.engine import Engine
 from apee.store import Store
 from test_controls import ControlsFixture
 from test_reviews import remote, check
@@ -107,3 +108,45 @@ class NotificationTests(ControlsFixture):
         self.notifier.receipt(item['id'], item['token'], 'Notification authorization denied')
         self.assertEqual(self.notifier.snapshot()['failed'], 1)
         self.assertIn('authorization denied', next(x for x in self.notifier.records() if x['id']==item['id'])['error'])
+
+    def test_expired_last_claim_cannot_overwrite_concurrent_receipt_from_another_connection(self):
+        self.settings(notifications=dict(enabled=True, max_attempts=1))
+        self.notifier = Notifications(self.engine)
+        _, item = self.ready()
+        with patch('apee.notifications.now', return_value='2026-10-13T00:00:00+00:00'):
+            claim = self.notifier.claim(item['id'])
+        other = Engine(self.config)
+        records = self.notifier.records
+        def interleave():
+            old = records()
+            self.assertTrue(Notifications(other).receipt(item['id'], claim['token'])['accepted'])
+            return old
+        try:
+            with patch.object(self.notifier, 'records', side_effect=interleave):
+                self.assertEqual(self.notifier.pending(), [])
+            saved = next(x for x in records() if x['id']==item['id'])
+            self.assertEqual(saved['status'], 'delivered')
+            self.assertEqual(saved['attempts'], 1)
+        finally: other.store.close()
+
+    def test_manual_retry_cannot_erase_a_concurrent_new_claim(self):
+        _, item = self.ready()
+        with patch('apee.notifications.now', return_value='2026-10-13T00:00:00+00:00'):
+            first = self.notifier.claim(item['id'])
+            self.notifier.receipt(item['id'], first['token'], 'Synthetic recoverable denial')
+        other = Engine(self.config)
+        records = self.notifier.records
+        second = {}
+        def interleave():
+            old = records()
+            second.update(Notifications(other).claim(item['id']))
+            self.assertTrue(second['claimed'])
+            return old
+        try:
+            with patch.object(self.notifier, 'records', side_effect=interleave):
+                with self.assertRaisesRegex(ApeeError, '另一程序更新'): self.notifier.retry(item['id'])
+            saved = next(x for x in records() if x['id']==item['id'])
+            self.assertEqual(saved['status'], 'sending')
+            self.assertEqual(saved['token'], second['token'])
+            self.assertEqual(saved['attempts'], 2)
+        finally: other.store.close()

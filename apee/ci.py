@@ -10,6 +10,15 @@ from .store import now
 from .github import CINotStarted
 
 
+ACTIVE_REPAIRS = {'queued', 'preparing', 'running', 'testing', 'ready', 'publishing', 'waiting', 'interrupted'}
+
+
+def guard_other_repairs(engine, parent, identifier):
+    control = engine.store.control('ci_repair:'+parent) or dict(tasks=[])
+    others = [item for item in control['tasks'] if item!=identifier and engine.store.task(item)['state'] in ACTIVE_REPAIRS]
+    if others: raise ApeeError('同一 PR 另有可恢復或處理中的 CI 修復，未重複派工。')
+
+
 def schedule(engine):
     if not engine.config.ci_repair['enabled']:
         return dict(added=[], errors=[])
@@ -25,8 +34,7 @@ def schedule(engine):
             continue
         key = 'ci_repair:' + task['id']
         control = engine.store.control(key) or dict(tasks=[])
-        active = [identifier for identifier in control['tasks'] if engine.store.task(identifier)['state'] in
-                  ('queued', 'preparing', 'running', 'testing', 'ready', 'publishing')]
+        active = [identifier for identifier in control['tasks'] if engine.store.task(identifier)['state'] in ACTIVE_REPAIRS]
         if active:
             engine.store.set_control('ci_repair_status:'+task['id'], dict(kind='in_progress', tasks=active, message='CI 修復任務已在處理或等待交付。'))
             continue
@@ -60,7 +68,8 @@ def schedule(engine):
     return dict(added=added, errors=errors)
 
 
-def assert_source(engine, spec, repo):
+def assert_source(engine, spec, repo, identifier):
+    guard_other_repairs(engine, spec['parent_task'], identifier)
     parent = engine.store.task(spec['parent_task'])
     if parent['repo'] != repo or parent['run_id'] != spec['parent_run']:
         raise ApeeError('CI 修復的原始任務版本已改變。')

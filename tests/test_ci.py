@@ -145,6 +145,22 @@ class CIRepairTests(ControlsFixture):
         self.assertEqual(ci.schedule(self.engine)['added'], [])
         self.assertEqual(self.engine.store.control('ci_repair_status:'+self.parent)['kind'], 'limit')
 
+    def test_waiting_or_interrupted_repair_deduplicates_and_manual_retry_cannot_compete(self):
+        self.settings(ci_repair=dict(enabled=True, max_attempts_per_pr=2))
+        first = self.scheduled()
+        for state in ('waiting', 'interrupted'):
+            self.engine.store.transition(first, state)
+            self.assertEqual(ci.schedule(self.engine)['added'], [])
+            self.assertEqual(self.engine.store.control('ci_repair_status:'+self.parent)['kind'], 'in_progress')
+        self.engine.store.transition(first, 'failed')
+        second = ci.schedule(self.engine)['added'][0]
+        with self.assertRaisesRegex(ApeeError, '未重複派工'): self.engine.retry(first)
+        self.assertEqual(self.engine.store.task(first)['state'], 'failed')
+        self.engine.store.transition(first, 'queued')  # Simulate an older queue restored during upgrade.
+        with self.assertRaisesRegex(ApeeError, '未重複派工'): self.engine.execute(first)
+        self.assertEqual(self.engine.executor.calls, 0)
+        self.assertEqual(self.engine.store.task(second)['state'], 'queued')
+
 
 class CILogTests(unittest.TestCase):
     def test_platform_refusal_without_runner_or_steps_is_reported_without_repair(self):

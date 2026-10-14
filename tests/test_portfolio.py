@@ -200,6 +200,26 @@ class PortfolioTests(ControlsFixture):
             self.portfolio.save('metrics', dict(definition=definition['id'], value='0', source='Unobserved prediction', observed_at='2099-01-01T00:00:00Z'))
         self.assertEqual(self.portfolio.latest_metrics(), {})
 
+    def test_acceptance_uses_current_baseline_and_new_definitions_without_claiming_prior_improvement(self):
+        definition = self.portfolio.save('definitions', dict(goal=self.goal['id'], repo='example/demo', name='Defects', unit='count', direction='lte', target='20'))
+        original = self.portfolio.save('metrics', dict(definition=definition['id'], value='10', source='Before proposal', observed_at='2026-10-12T00:00:00Z'))
+        identifier = cycle(self.engine)['proposals'][0]
+        current = self.portfolio.save('metrics', dict(definition=definition['id'], value='8', source='Before acceptance', observed_at='2026-10-13T00:00:00Z'))
+        additional = self.portfolio.save('definitions', dict(goal=self.goal['id'], repo='example/demo', name='Latency', unit='seconds', direction='lte', target='5'))
+        latency = self.portfolio.save('metrics', dict(definition=additional['id'], value='4', source='Added before acceptance', observed_at='2026-10-13T00:00:00Z'))
+        selected = self.portfolio.decide(dict(candidate=identifier, decision='accept', reason='Explicit current-baseline test'))
+        self.assertEqual([x['id'] for x in selected['planning_baseline']], [original['id']])
+        self.assertEqual({x['id'] for x in selected['baseline']}, {current['id'], latency['id']})
+        self.engine.execute(selected['task'])
+        with patch('apee.portfolio.now', return_value='2026-10-14T14:00:00+00:00'):
+            self.portfolio.complete_local(dict(task=selected['task'], reason='Synthetic acceptance'))
+        with patch('apee.portfolio.now', return_value='2026-10-15T00:01:00+00:00'):
+            self.portfolio.save('metrics', dict(definition=definition['id'], value='9', source='Post-delivery regression', observed_at='2026-10-15T00:00:00Z'))
+            self.portfolio.save('metrics', dict(definition=additional['id'], value='4', source='Post-delivery latency', observed_at='2026-10-15T00:00:00Z'))
+            measured = self.portfolio.measure()[0]
+            self.assertEqual(measured['status'], 'regressed')
+            self.assertEqual(len(measured['comparisons']), 2)
+
     def test_definition_changes_nonfinite_numbers_and_foreign_goals_are_rejected(self):
         for bad in ('NaN', 'Infinity', '1e9', 1, '-inf'):
             with self.subTest(bad=bad), self.assertRaises(ApeeError):

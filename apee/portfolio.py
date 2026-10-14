@@ -259,6 +259,11 @@ class Portfolio:
             with self.store.db:
                 changed = self.store.db.execute("INSERT OR IGNORE INTO tasks VALUES (?, ?, ?, 'queued', ?, ?, ?, NULL)",
                     (task_id, item['repo'], json.dumps(spec, ensure_ascii=False), goal['priority'], stamp, stamp)).rowcount
+                # Capture current measurements after the write transaction starts.
+                latest = self.latest_metrics()
+                item['planning_baseline'] = item['baseline']
+                item['baseline'] = [latest[d['id']] for d in self.store.documents('definitions')
+                                    if d['goal']==item['goal'] and d['id'] in latest]
                 if changed:
                     self.store._event(task_id, 'queued', dict(source='proposal', candidate=item['id'], reason=reason))
                     self.store._save_document('task_context', dict(id=task_id, goal=item['goal'], depends_on=[]))

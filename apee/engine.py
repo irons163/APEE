@@ -225,6 +225,8 @@ class Engine:
         task = self.store.task(task_id)
         if task["state"] not in ("failed", "interrupted", "waiting"):
             raise ApeeError(f"此操作不適用於 {task['state']} 狀態。")
+        if task['spec'].get('source')=='ci_repair':
+            ci.guard_other_repairs(self, task['spec']['parent_task'], task_id)
         for run in self.store.runs(task_id):
             if lease_state(self.config.state_dir / "runs" / run["id"]) in ("active", "unreadable"):
                 raise ApeeError("這項任務的舊嘗試仍有執行程序，或執行鎖無法讀取；未重新入列。")
@@ -304,7 +306,7 @@ class Engine:
                 run['goal_context'] = dict(goal=goal, depends_on=context['depends_on'])
                 spec = run['spec'] = dict(spec, body=spec['body']+'\n\n所屬目標：'+goal['objective']+'\n目標完成條件：'+goal['criteria'])
             if spec['source'] == 'ci_repair':
-                ci.assert_source(self, spec, task['repo'])
+                ci.assert_source(self, spec, task['repo'], task_id)
                 run['base'] = spec['base']
                 self.github.clone(task['repo'], workspace, run['branch'])
             else:

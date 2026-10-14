@@ -27,6 +27,10 @@ class Notifications:
         self.store.db.execute('INSERT OR REPLACE INTO notification_outbox VALUES (?, ?)',
                              (item['id'], json.dumps(item, ensure_ascii=False)))
 
+    def _update(self, item, previous):
+        return self.store.db.execute('UPDATE notification_outbox SET data=? WHERE id=? AND data=?',
+            (json.dumps(item, ensure_ascii=False), item['id'], previous)).rowcount
+
     def mark(self, topic, fingerprint, title=None, body=None, baseline=False):
         key = 'notification_marker:'+topic
         previous = self.store.control(key) or {}
@@ -90,16 +94,17 @@ class Notifications:
         ready = []
         with self.store.db:
             for item in self.records():
+                previous = json.dumps(item, ensure_ascii=False)
                 marker = self.store.control('notification_marker:'+item['topic']) or {}
                 if item['status'] in ('delivered', 'superseded', 'blocked'): continue
                 if marker.get('sequence')!=item['sequence']:
                     item['status'] = 'superseded'
-                    self._save(item)
+                    self._update(item, previous)
                     continue
                 if item.get('next_retry', '')>now() or (item['status']=='sending' and item.get('leased_until', '')>now()): continue
                 if item['attempts']>=self.config.notifications['max_attempts']:
                     item['status'] = 'blocked'
-                    self._save(item)
+                    self._update(item, previous)
                     continue
                 ready.append(item)
         return sorted(ready, key=lambda x:(x['created'], x['id']))[:10]
@@ -135,9 +140,11 @@ class Notifications:
             item = next((item for item in self.records() if item['id']==identifier), None)
             if not item or item['status'] not in ('failed', 'blocked'):
                 raise ApeeError('只有失敗通知可以重新嘗試。')
+            previous = json.dumps(item, ensure_ascii=False)
             item.setdefault('retry_history', []).append(dict(at=now(), attempts=item['attempts'], error=item.get('error'), source='user'))
             item.update(status='pending', attempts=0, next_retry=now())
-            self._save(item)
+            if not self._update(item, previous):
+                raise ApeeError('通知已由另一程序更新，請重新整理。')
         return item
 
     def snapshot(self):
