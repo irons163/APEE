@@ -27,7 +27,7 @@ def diagnostic_text(text):
     text = re.sub(r'(?i)(bearer\s+)[^\s]+', r'\1[REDACTED]', text)
     text = re.sub(r'(?i)((?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*)[^\s]+',
                   r'\1[REDACTED]', text)
-    return re.sub(r'\b(?:gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{12,})\b', '[REDACTED]', text)[-4000:]
+    return re.sub(r'\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{12,})\b', '[REDACTED]', text)[-4000:]
 
 
 def validate_review(data, workspace, base, runner):

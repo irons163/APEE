@@ -7,12 +7,16 @@ from pathlib import Path
 from datetime import datetime
 
 from .budget import Budget
+from . import ci
 from .config import ApeeError, Config, DispatchBlocked
 from .executors import CodexExecutor, ExecutorUnavailable, PatchExecutor, Validator
 from .github import GitHub
 from .leases import attempt_lease, lease_state
 from .process import Runner
 from .quality import CodexReviewer, ValidationFailed, diagnostic_text, model_call, validate_review
+from .portfolio import Portfolio
+from .planning import CodexPlanner
+from . import planning
 from .reviews import snapshot, summary
 from .store import Store, now
 
@@ -31,13 +35,14 @@ def eligible(issue, project):
 
 
 class Engine:
-    def __init__(self, config, runner=None, github=None, executor=None, validator=None, reviewer=None):
+    def __init__(self, config, runner=None, github=None, executor=None, validator=None, reviewer=None, planner=None):
         self.config = config
         self.runner = runner or Runner()
         self.github = github or GitHub(self.runner)
         self.executor = executor or CodexExecutor(config, self.runner)
         self.validator = validator or Validator(config, self.runner)
         self.reviewer = reviewer or CodexReviewer(config, self.runner)
+        self.planner = planner or CodexPlanner(config, self.runner)
         self.store = Store(config.state_dir)
 
     def reload_config(self):
@@ -51,6 +56,8 @@ class Engine:
             self.validator.config = config
         if isinstance(self.reviewer, CodexReviewer):
             self.reviewer.config = config
+        if isinstance(self.planner, CodexPlanner):
+            self.planner.config = config
 
     def dispatch_blocker(self, use_codex=True):
         paused = self.store.control("paused")
@@ -62,6 +69,10 @@ class Engine:
         if pending:
             return {"kind": "recovery_required", "attempts": pending,
                     "message": "尚有未完成嘗試或殘留程序；執行 recover 查看，處理後才能開始新任務。"}
+        planning_jobs = [job['id'] for job in self.store.model_jobs()
+                         if lease_state(job['run_dir']) in ('active', 'unreadable') or job['state']=='running']
+        if planning_jobs:
+            return dict(kind='planning_active', jobs=planning_jobs, message='尚有未完成的規劃回合；核對程序與用量後才能開始新工作。')
         hold = self.store.control("codex_hold") if use_codex else None
         if hold:
             return hold
@@ -246,16 +257,17 @@ class Engine:
         return task_id
 
     def next_task(self):
-        candidates = [task for task in self.store.tasks() if task["state"] == "queued"
-                      and self.config.projects.get(task["repo"], {}).get("enabled")]
-        candidates.sort(key=lambda t: (self.config.projects[t["repo"]]["priority"], t["created"], t["id"]))
-        return candidates[0]["id"] if candidates else None
+        return Portfolio(self).decisions()['next_task']
 
     def execute(self, task_id, local_only=False, patch=None):
         task = self.store.task(task_id)
         project = self.config.project(task["repo"])
         if task["state"] != "queued":
             raise ApeeError(f"任務狀態是 {task['state']}，不會重複執行。")
+        decision = next(item for item in Portfolio(self).decisions()['tasks'] if item['task']==task_id)
+        self.store.set_control('dispatch_decision', dict(decision, at=now()))
+        if not decision['eligible']:
+            raise ApeeError('任務尚不能開始：'+'；'.join(decision['reasons']))
         blocker = self.dispatch_blocker(use_codex=patch is None)
         if blocker:
             raise DispatchBlocked(blocker)
@@ -268,7 +280,9 @@ class Engine:
                    workspace=str(workspace), run_dir=str(run_dir), project=project, spec=spec,
                    branch=f"apee/task-{run_id[:16]}", lease_version=1,
                    execution_backend='imported_patch' if patch is not None else 'codex',
-                   quality_required=self.config.quality['enabled'])
+                   quality_required=self.config.quality['enabled'] or spec['source'] == 'ci_repair')
+        if spec['source'] == 'ci_repair':
+            run['branch'] = spec['branch']
         with self.runner.lease(run_dir):
             return self._execute(task, project, run, local_only, patch)
 
@@ -284,11 +298,25 @@ class Engine:
                     raise ApeeError("Issue 已關閉或已移除派工標籤。")
                 # Freeze the latest source before executing; the queued snapshot remains in history.
                 spec = run["spec"] = issue_spec(issue)
-            meta = self.github.metadata(task["repo"])
-            run["base"] = meta["default_branch"]
-            self.github.clone(task["repo"], workspace, run["base"])
+            context = Portfolio(self).links().get(task_id)
+            if context and context.get('goal'):
+                goal = self.store.document('goals', context['goal'])
+                run['goal_context'] = dict(goal=goal, depends_on=context['depends_on'])
+                spec = run['spec'] = dict(spec, body=spec['body']+'\n\n所屬目標：'+goal['objective']+'\n目標完成條件：'+goal['criteria'])
+            if spec['source'] == 'ci_repair':
+                ci.assert_source(self, spec, task['repo'])
+                run['base'] = spec['base']
+                self.github.clone(task['repo'], workspace, run['branch'])
+            else:
+                meta = self.github.metadata(task["repo"])
+                run["base"] = project.get('base_branch') or meta["default_branch"]
+                self.github.clone(task["repo"], workspace, run["base"])
             run["base_sha"] = self.runner.git(workspace, "rev-parse", "HEAD")
-            self.runner.git(workspace, "checkout", "-b", run["branch"])
+            if spec['source'] == 'ci_repair':
+                if run['base_sha'] != spec['expected_head']:
+                    raise ApeeError('CI 修復 checkout 的版本已改變。')
+            else:
+                self.runner.git(workspace, "checkout", "-b", run["branch"])
             self.validator.check(workspace, run_dir, project["setup"], "setup", project.get("setup_network", False))
             if self.runner.git(workspace, "status", "--porcelain"):
                 raise ApeeError("依賴準備改動了版本控制內容；請先修正 setup 設定。")
@@ -430,7 +458,10 @@ class Engine:
         lines = [f"# {spec['title']}", "", "APEE 已產生程式變更並通過設定的測試，待人工審查。", ""]
         backend = run.get("agent", {}).get("backend")
         if backend == "imported_patch":
-            lines += ["修補來源：外部提供的 patch；由 APEE 套用、驗證與交付。本次未由 APEE 的 Codex 執行器產生程式變更。", ""]
+            if run.get('repairs'):
+                lines += [f"初始修補來源：外部 patch；最終內容另包含 {len(run['repairs'])} 次 Codex 有限修復。各回合的來源、用量與驗證分開保存。", '']
+            else:
+                lines += ["修補來源：外部提供的 patch；由 APEE 套用、驗證與交付。本次未由 APEE 的 Codex 執行器產生程式變更。", ""]
         elif backend == "codex":
             lines += ["修補來源：APEE 的 Codex 執行器。", ""]
         if spec.get("url"):
@@ -457,8 +488,8 @@ class Engine:
         with self.runner.lease(self.config.state_dir / "runs" / run["id"]):
             return self._publish(task, run)
 
-    def _publish(self, task, run):
-        task_id = task["id"]
+    def check_delivery(self, task, run):
+        """Recheck local evidence before either publication or explicit local acceptance."""
         workspace = Path(run["workspace"])
         if not run.get("tests") or not all(t.get("passed") is True for t in run["tests"]):
             raise ApeeError("缺少完整測試結果。")
@@ -470,8 +501,15 @@ class Engine:
         if self.runner.git(workspace, "rev-parse", "HEAD") != run["commit"] or self.runner.git(workspace, "status", "--porcelain"):
             raise ApeeError("驗證後工作副本已變更，未上傳。")
         self._check_paths(workspace, self.config.project(task["repo"]), [run["base_sha"], run["commit"]])
+
+    def _publish(self, task, run):
+        task_id = task["id"]
+        workspace = Path(run['workspace'])
+        self.check_delivery(task, run)
         self.store.transition(task_id, "publishing", run=run)
         try:
+            if run['spec']['source'] == 'ci_repair':
+                return ci.publish(self, task, run)
             # Reconcile before any write, including retry after an ambiguous API failure.
             existing = self.github.find_pr(task["repo"], run["branch"])
             if existing:
@@ -548,12 +586,16 @@ class Engine:
         return result
 
     def cycle(self, local_only=False, task_limit=None):
+        from .notifications import Notifications
+        Notifications(self).collect()
         result = {"added": [], "errors": [], "runs": [], "attempts": 0}
         reviews = self.refresh_reviews(limit=self.config.max_pr_checks)
         result["pr_updates"] = reviews["changes"]
         result["review_checked"] = reviews["checked"]
         result["errors"].extend(reviews["errors"])
         Budget(self.config, self.store).reconcile()
+        Portfolio(self).measure()
+        planning.recover_jobs(self)
         recovered = self.auto_recover()
         if recovered:
             result['recoveries'] = recovered
@@ -564,6 +606,14 @@ class Engine:
         synced = self.sync()
         result["added"] = synced["added"]
         result["errors"].extend(synced["errors"])
+        repairs = ci.schedule(self)
+        result['added'].extend(repairs['added'])
+        result['errors'].extend(repairs['errors'])
+        proposed = planning.cycle(self)
+        result['planning'] = proposed
+        result['added'].extend(proposed['enqueued'])
+        if proposed.get('error'):
+            result['errors'].append(dict(stage='planning', error=proposed['error']))
         limit = min(self.config.max_tasks, task_limit) if task_limit is not None else self.config.max_tasks
         for _ in range(limit):
             blocker = self.dispatch_blocker()

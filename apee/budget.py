@@ -71,6 +71,7 @@ class Budget:
         directory = Path(directory or self.config.state_dir / 'runs' / run['id'])
         relative = directory.relative_to(self.config.state_dir) / 'agent-events.log'
         record = dict(run_id=key, attempt_id=run['id'], phase=phase or 'development',
+                      lease_relative=str(Path(run['run_dir']).relative_to(self.config.state_dir)),
                       log_relative=str(relative), at=now(), model=self.config.model,
                       prices=self.config.budget.get('prices_per_million'), status='pending',
                       usage=None, estimated_usd=None, source='model_started')
@@ -109,7 +110,7 @@ class Budget:
         for record in self.records():
             if record['run_id'] not in stored:
                 self.store.save_usage(record)
-            elif record['status'] == 'pending' and lease_state(self.config.state_dir / 'runs' / record.get('attempt_id', record['run_id'])) == 'idle':
+            elif record['status'] == 'pending' and lease_state(self.config.state_dir / record.get('lease_relative', str(Path('runs') / record.get('attempt_id', record['run_id'])))) == 'idle':
                 self.finish(dict(id=record.get('attempt_id', record['run_id'])), record['run_id'])
 
     def summary(self, day=None):
@@ -163,12 +164,12 @@ class Budget:
             raise ApeeError('人工核對需要原因。')
         previous = next((item for item in self.records() if item['run_id'] == run_id), None)
         attempt_id = previous.get('attempt_id', run_id) if previous else run_id
-        run = next((item for item in self.store.runs() if item['id'] == attempt_id), None)
+        run = next((item for item in [*self.store.runs(), *self.store.model_jobs()] if item['id'] == attempt_id), None)
         if not run:
             raise ApeeError('找不到指定嘗試。')
         if not previous and run.get('execution_backend') != 'codex':
             raise ApeeError('此嘗試沒有模型用量來源。')
-        lease = lease_state(self.config.state_dir / 'runs' / attempt_id)
+        lease = lease_state(self.config.state_dir / (previous or {}).get('lease_relative', str(Path('runs') / attempt_id)))
         legacy_complete = (lease == 'missing' and run.get('lease_version') is None
                            and previous and previous['status'] == 'known')
         if lease != 'idle' and not legacy_complete:

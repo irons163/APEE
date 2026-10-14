@@ -7,6 +7,7 @@ import time
 from .config import BusyError, positive_int
 from .report import render
 from .store import now
+from .notifications import deliver
 
 
 def work(engine, interval=300, max_cycles=12, max_tasks=5, local_only=False,
@@ -42,6 +43,7 @@ def work(engine, interval=300, max_cycles=12, max_tasks=5, local_only=False,
                 status["updated_at"] = now()
                 engine.store.set_control("worker", status)
                 render(engine)
+                deliver(engine)
                 # Emit outcomes and changes; identical empty/paused polls stay quiet.
                 idle = (result.get("blocked"), result.get("busy", False))
                 errors = json.dumps(result.get("errors", []), sort_keys=True)

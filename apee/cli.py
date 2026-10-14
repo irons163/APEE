@@ -13,7 +13,10 @@ from .service import Service
 from .store import now
 from .worker import work
 from .budget import Budget
-from .controls import add_project as save_project, configure, snapshot
+from .controls import add_project as save_project, edit_project, configure, snapshot
+from .portfolio import Portfolio
+from . import planning
+from .notifications import Notifications, deliver as deliver_notifications
 
 
 def parser():
@@ -30,6 +33,10 @@ def parser():
     add.add_argument("--setup-network", action="store_true", help="允許依賴準備命令連網")
     add.add_argument("--publish-draft", action="store_true", help="測試通過後自動交付 Draft PR")
     add.add_argument("--priority", type=int, choices=range(1, 6), default=3)
+    edit = sub.add_parser('project-edit', help='修改既有專案並保留命令模板與其他選項')
+    edit.add_argument('repo')
+    edit.add_argument('--changes-json', required=True)
+    edit.add_argument('--expected-revision', required=True)
     enqueue = sub.add_parser("enqueue", help="直接加入開發任務")
     enqueue.add_argument("repo")
     enqueue.add_argument("--title", required=True)
@@ -77,6 +84,24 @@ def parser():
     sub.add_parser('snapshot', help='桌面介面的本機 JSON 狀態，不連網')
     settings = sub.add_parser('configure', help='更新用量與恢復政策，保留專案原始設定')
     settings.add_argument('--settings-json', required=True)
+    portfolio = sub.add_parser('portfolio', help='目標、依賴、回饋、指標與候選工作')
+    portfolio_actions = portfolio.add_subparsers(dest='portfolio_action', required=True)
+    for name in ('goals', 'feedback', 'definitions', 'metrics', 'link', 'complete-local', 'decide'):
+        action = portfolio_actions.add_parser(name)
+        action.add_argument('--data-json', required=True)
+    for name in ('status', 'plan', 'measure'):
+        portfolio_actions.add_parser(name)
+    notifications = sub.add_parser('notifications', help='macOS 通知佇列、送達確認與重試')
+    notification_actions = notifications.add_subparsers(dest='notification_action', required=True)
+    notification_actions.add_parser('pending')
+    notification_actions.add_parser('status')
+    for name in ('claim', 'retry'):
+        action = notification_actions.add_parser(name)
+        action.add_argument('id')
+    receipt = notification_actions.add_parser('receipt')
+    receipt.add_argument('id')
+    receipt.add_argument('--token', required=True)
+    receipt.add_argument('--error')
     budget = sub.add_parser('budget', help='核對本機模型用量與預算')
     budgets = budget.add_subparsers(dest='budget_action', required=True)
     budget_status = budgets.add_parser('status')
@@ -176,6 +201,16 @@ def main(argv=None):
         if args.command == 'snapshot':
             emit(snapshot(engine))
             return 0
+        if args.command == 'notifications':
+            notifier = Notifications(engine)
+            action = args.notification_action
+            if action=='pending': result = notifier.pending()
+            elif action=='status': result = notifier.snapshot()
+            elif action=='claim': result = notifier.claim(args.id)
+            elif action=='retry': result = notifier.retry(args.id)
+            else: result = notifier.receipt(args.id, args.token, args.error)
+            emit(result)
+            return 0
         if args.command == "work":
             status = work(engine, args.interval, args.max_cycles, args.max_tasks, args.local_only, notify=emit)
             return int(status["had_errors"])
@@ -188,9 +223,27 @@ def main(argv=None):
         )
         lock = nullcontext() if concurrent else engine.store.lock()
         with lock:
-            if args.command == 'configure':
+            Notifications(engine).collect()
+            if args.command == 'portfolio':
+                portfolio = Portfolio(engine)
+                action = args.portfolio_action
+                if action == 'status': emit(portfolio.snapshot())
+                elif action == 'plan': emit(planning.cycle(engine, requested=True))
+                elif action == 'measure': emit(portfolio.measure())
+                else:
+                    data = json.loads(args.data_json)
+                    if action == 'link': result = portfolio.link(data)
+                    elif action == 'complete-local': result = portfolio.complete_local(data)
+                    elif action == 'decide': result = portfolio.decide(data)
+                    else: result = portfolio.save(action, data)
+                    emit(result)
+            elif args.command == 'configure':
+                previous_notifications = engine.config.notifications
                 emit(configure(config, json.loads(args.settings_json)))
                 engine.reload_config()
+                if engine.config.notifications['enabled'] and not previous_notifications['enabled']:
+                    engine.store.set_control('notification_cursor', None)
+                    Notifications(engine).collect()
             elif args.command == 'budget':
                 budget = Budget(config, engine.store)
                 if args.budget_action == 'reconcile':
@@ -211,6 +264,9 @@ def main(argv=None):
             elif args.command == "project-add":
                 add_project(config, args)
                 engine.config = Config(args.config)
+            elif args.command == 'project-edit':
+                emit(edit_project(config, args.repo, json.loads(args.changes_json), args.expected_revision))
+                engine.reload_config()
             elif args.command == "discover":
                 repos = engine.github.discover(args.owner)
                 (config.state_dir / "discovery.json").write_text(json.dumps(repos, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -301,8 +357,10 @@ def main(argv=None):
     finally:
         if engine:
             try:
-                if args.command != 'snapshot':
-                    print(f"總覽：{render(engine)}")
+                if args.command not in ('snapshot', 'notifications'):
+                    overview = render(engine)
+                    if args.command != 'portfolio': print(f"總覽：{overview}")
+                    deliver_notifications(engine)
             except (OSError, ValueError) as exc:
                 print(f"總覽更新失敗：{exc}", file=sys.stderr)
             finally:

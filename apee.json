@@ -7,6 +7,10 @@
   "max_tasks_per_cycle": 1,
   "daily_attempt_limit": 10,
   "max_pr_checks_per_cycle": 20,
+  "quality": {"enabled": true, "max_repairs": 1},
+  "ci_repair": {"enabled": true, "max_attempts_per_pr": 1},
+  "planning": {"enabled": false, "max_active_projects": 2, "max_new_tasks_per_cycle": 1, "max_pending_candidates": 5, "max_calls_per_day": 1},
+  "notifications": {"enabled": false, "max_attempts": 6},
   "projects": [
     {
       "repo": "irons163/codex-pool-manager",

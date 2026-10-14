@@ -77,9 +77,12 @@ def snapshot(data, run):
         "head": data["headRefOid"], "branch": data["headRefName"], "base": data["baseRefName"],
         "review": data.get("reviewDecision") or "", "merge_status": data.get("mergeStateStatus") or "UNKNOWN",
         "merged_at": data.get("mergedAt"), "closed_at": data.get("closedAt"), "ci": ci, "checks": checks,
-        "matches_verified_commit": data["headRefOid"] == run["commit"],
+        "matches_verified_commit": data["headRefOid"] == run.get('active_delivery', {}).get('commit', run["commit"]),
         "matches_delivery_target": data["baseRefName"] == run["base"] and data["headRefName"] == run["branch"],
     }
+    if run.get('active_delivery'):
+        result['verified_commit'] = run['active_delivery']['commit']
+        result['verification_run'] = run['active_delivery']['run_id']
     result["attention"] = attention(result)
     return result
 

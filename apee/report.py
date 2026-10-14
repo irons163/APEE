@@ -6,12 +6,13 @@ from zoneinfo import ZoneInfo
 
 from .reviews import summary
 from .budget import Budget
+from .portfolio import Portfolio
 
 
 STATES = {
     "queued": "待執行", "preparing": "準備中", "running": "開發中", "testing": "測試中",
     "ready": "本機待審", "publishing": "交付中／需核對", "review": "PR 待審",
-    "failed": "失敗／需處理", "interrupted": "已中斷", "cancelled": "已取消", "waiting": "等待 Codex 恢復",
+    "failed": "失敗／需處理", "interrupted": "已中斷", "cancelled": "已取消", "waiting": "等待容量／Codex 恢復",
     "merged": "PR 已合併", "closed": "PR 已關閉（未合併）",
 }
 
@@ -64,6 +65,9 @@ def render(engine):
         lines += [f"最近連續執行：已檢查 {worker['cycles']} 輪，開始 {worker['attempts']} 次嘗試；"
                   f"最後更新 {worker.get('updated_at', worker['started_at'])}。", ""]
     tasks = engine.store.tasks()
+    portfolio = Portfolio(engine)
+    scheduling = portfolio.decisions()
+    decisions = {item['task']: item for item in scheduling['tasks']}
     runs = {task["id"]: engine.store.run(task["id"]) for task in tasks if task["run_id"]}
     recovery = {}
     if not engine.store.engine_active():
@@ -75,6 +79,10 @@ def render(engine):
     for task in tasks:
         run = runs.get(task["id"], {})
         reasons = list(run.get("pr_status", {}).get("attention", []))
+        reasons.extend(decisions.get(task['id'], {}).get('reasons', []))
+        if run.get('deferred'): reasons.append(run['deferred']['message'])
+        ci = engine.store.control('ci_repair_status:'+task['id'])
+        if ci and ci['kind'] in ('limit', 'logs_unavailable', 'platform_blocked'): reasons.append(ci['message'])
         if run.get("pr_refresh_error"):
             reasons.insert(0, "無法更新 PR 狀態：" + run["pr_refresh_error"]["message"])
         if task['state'] == 'interrupted' and run.get('recovery', {}).get('source') == 'automatic':
@@ -121,6 +129,14 @@ def render(engine):
             lines += [f"| {cell(task['id'])} — {cell(task['spec']['title'])} | {STATES.get(task['state'], task['state'])} | {output} | {progress} |"]
     else:
         lines += ["尚未排入開發任務。啟用專案並設定測試後，可加入直接任務，或同步具有派工標籤的 GitHub Issues。", ""]
+    lines += ['', '## 目標與規劃', '', f"同時推進專案 {len(scheduling['active_projects'])}／{scheduling['limit']}；規劃政策"+
+              ('已啟用。' if engine.config.planning['enabled'] else '未啟用，可從桌面明確執行一次規劃。'), '']
+    for goal in engine.store.documents('goals'):
+        lines += [f"- {cell(goal['title'])}：{cell(goal['criteria'])}；"+('已啟用' if goal['enabled'] else '已停用')+'。']
+    for candidate in engine.store.documents('candidates'):
+        lines += [f"- 候選 {cell(candidate['title'])}：{candidate['state']}；選擇依據：{cell(candidate['reason'])}。"]
+    for outcome in engine.store.documents('outcomes'):
+        lines += [f"- 成效 {cell(outcome['task'])}：{outcome['status']}；{cell(outcome['reason'])}。"]
     discovery = engine.config.state_dir / "discovery.json"
     if discovery.exists():
         repos = json.loads(discovery.read_text(encoding="utf-8"))
