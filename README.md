@@ -2,7 +2,7 @@
 
 把多個 GitHub 專案的開發任務排進同一個工作循環：**取得任務 → 獨立工作副本 → 自動開發 → 執行測試 → 交付待審變更**。
 
-這是 **1.0 本機完整功能版**。提供原生 macOS 桌面管理、持久任務、背景排程、有限自動恢復、所有模型回合的 token／估算費用預算、獨立程式碼審查、有限測試／審查修復、GitHub CI 修復、跨專案目標與依賴、回饋及指標、有限改進規劃、成效比較與 macOS 成果通知。完整驗收範圍与證據見 [docs/COMPLETION.md](docs/COMPLETION.md)。歷史的 [APEE PR #1](https://github.com/irons163/APEE/pull/1) 為真實模型開發；[codex-pool-manager PR #9](https://github.com/irons163/codex-pool-manager/pull/9) 為外部修補驗證與交付，來源分開保存。
+這是 **1.0 本機完整功能版**。提供原生 macOS 桌面管理、持久任務、背景排程、有限自動恢復、所有模型回合的 token／估算費用預算、獨立程式碼審查、有限測試／審查修復、GitHub CI 修復、跨專案目標與依賴、回饋及指標、有限改進規劃、成效比較與 macOS 成果通知。完整驗收範圍與證據見 [docs/COMPLETION.md](docs/COMPLETION.md)。歷史的 [APEE PR #1](https://github.com/irons163/APEE/pull/1) 為真實模型開發；[codex-pool-manager PR #9](https://github.com/irons163/codex-pool-manager/pull/9) 為外部修補驗證與交付，來源分開保存。
 
 ## 提供什麼
 
