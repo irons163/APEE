@@ -2,9 +2,9 @@
 
 把多個 GitHub 專案的開發任務排進同一個工作循環：**取得任務 → 獨立工作副本 → 自動開發 → 執行測試 → 交付待審變更**。
 
-這是 **0.6.1 本機原型**。已有命令列與原生 macOS 桌面介面、持久任務佇列、有限的連續執行與背景排程、Codex 執行介面、獨立驗證、Draft PR 交付、成果追蹤、有上限的自動中斷恢復，以及依已記錄用量控制新派工的 token／估算費用預算。2026-10-13 已透過 [APEE PR #1](https://github.com/irons163/APEE/pull/1) 完成一次真實「模型自主修改 → 獨立驗證 → 提交 → Draft PR」驗收，修正設定搬移後的驗證路徑。較早的 [codex-pool-manager PR #9](https://github.com/irons163/codex-pool-manager/pull/9) 則驗證外部修補的套用與交付。詳見 [驗證紀錄](docs/VALIDATION.md)。
+這是 **1.0 本機完整功能版**。提供原生 macOS 桌面管理、持久任務、背景排程、有限自動恢復、所有模型回合的 token／估算費用預算、獨立程式碼審查、有限測試／審查修復、GitHub CI 修復、跨專案目標與依賴、回饋及指標、有限改進規劃、成效比較與 macOS 成果通知。完整驗收範圍與證據見 [docs/COMPLETION.md](docs/COMPLETION.md)。歷史的 [APEE PR #1](https://github.com/irons163/APEE/pull/1) 為真實模型開發；[codex-pool-manager PR #9](https://github.com/irons163/codex-pool-manager/pull/9) 為外部修補驗證與交付，來源分開保存。
 
-## 第一版提供什麼
+## 提供什麼
 
 - 讀取 GitHub 帳號的專案清單，產生繁體中文總覽。
 - 只處理設定中啟用的 repositories；每個專案有自己的優先順序、準備步驟與測試命令。
@@ -24,6 +24,8 @@
 - 追蹤已交付 PR 的 GitHub 檢查、審查要求、衝突、合併及關閉狀態；總覽集中列出需處理的成果。
 
 ## 執行需求
+
+1.0 的完整操作規則、預算與來源邊界，見 [目標、修復、規劃與通知](docs/WORKFLOWS.md)。舊設定未指定新政策時維持停用；範例啟用審查及有限 CI 修復，規劃與通知由桌面明確設定。
 
 - macOS、Python 3.9+、Git、已登入的 GitHub CLI，以及已登入的 Codex CLI。
 - 2026-10-13 本機驗證版本為 Codex CLI `0.162.0-alpha.17.2`、GitHub CLI `2.102.0`、Python `3.9.6`。需支援 `codex exec --ignore-user-config` 及 `codex sandbox --permission-profile`。
@@ -293,7 +295,7 @@ python3 -m apee run 'your-account/your-project#123' --patch changes.patch --loca
 
 這必須明確指定待執行的任務 ID；若上次執行失敗，先使用 `retry`。紀錄會標示 `imported_patch`，不會將外部修補算成模型自主產生的成果。
 
-外部 patch 不需要模型額度，因此可在 Codex 暫停期間使用；仍受使用者暫停、每日上限及相同驗證規則限制。已驗證成果的 `publish` 可獨立執行。
+套用外部 patch 不使用開發模型回合；啟用獨立審查或有限修復時仍會呼叫模型，遵守模型暫停與預算。未啟用審查時，可在 Codex 暫停期間套用及驗證外部 patch；使用者暫停、每日上限及內容核對規則持續有效。已驗證成果的 `publish` 可獨立執行。
 
 每次執行的 `.apee/runs/<run-id>/` 包含 `repo/`、固定需求、模型事件、測試記錄，以及通過後的 `changes.patch` 與 `review.md`。SQLite 保存所有任務與狀態事件。不要在工作仍執行時刪除這些資料。
 
@@ -318,8 +320,8 @@ PR 追蹤驗證檢查狀態分類、版本漂移、要求修改、衝突、合�
 
 ## 目前限制
 
-- 目前是循序執行的本機引擎，提供有限的前景連續模式、macOS 使用者背景排程與原生桌面控制；尚無跨主機 worker、功能探索或自動產品決策。
-- 自主範圍為執行已提供的任務與追蹤已交付成果。尚無獨立模型程式碼審查、GitHub CI 自動修復或自動 merge。
+- 開發執行維持循序處理，跨專案政策限制同時等待交付的專案數；沒有跨主機 worker。
+- 規劃依已設定的目標與證據提出有限候選；自動入列必須由目標政策明確啟用。交付停在待審，不自動 merge 或部署。
 - 只接 GitHub.com 同一 repository 的任務分支；尚未支援 Enterprise、fork PR 或 submodules 的特殊準備流程。
 - 專案準備與測試使用 Codex sandbox，允許 checkout 及系統暫存目錄寫入。這不是容器／VM；適用於你信任的程式庫，不能當作任意不可信程式碼的隔離服務。
 - 模型沿用 CLI 登入，忽略個人 `config.toml` 並明確指定 workspace-write；未指定 `model` 時使用 CLI 預設。專案與管理政策仍可能限制執行。原始碼與任務內容會交由設定的模型服務處理。

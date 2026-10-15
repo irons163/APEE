@@ -39,6 +39,16 @@ class Store:
             CREATE TABLE IF NOT EXISTS usage_records (
                 run_id TEXT PRIMARY KEY, data TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS portfolio (
+                kind TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL,
+                PRIMARY KEY(kind, id)
+            );
+            CREATE TABLE IF NOT EXISTS model_jobs (
+                id TEXT PRIMARY KEY, data TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS notification_outbox (
+                id TEXT PRIMARY KEY, data TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS events_state_at ON events(state, at);
         """)
 
@@ -47,7 +57,7 @@ class Store:
 
     @contextmanager
     def lock(self, name="engine"):
-        if name not in ("engine", "worker"):
+        if name not in ("engine", "worker", "notifications"):
             raise ValueError("Unknown lock name")
         with (self.root / f"{name}.lock").open("a+") as handle:
             try:
@@ -183,3 +193,29 @@ class Store:
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO usage_records VALUES (?, ?)",
                             (record["run_id"], json.dumps(record, ensure_ascii=False)))
+
+    def documents(self, kind):
+        return [json.loads(row[0]) for row in self.db.execute(
+            'SELECT data FROM portfolio WHERE kind=? ORDER BY id', (kind,))]
+
+    def document(self, kind, identifier):
+        row = self.db.execute('SELECT data FROM portfolio WHERE kind=? AND id=?', (kind, identifier)).fetchone()
+        if not row:
+            raise ApeeError(f'找不到 {kind}：{identifier}')
+        return json.loads(row[0])
+
+    def _save_document(self, kind, data):
+        self.db.execute('INSERT OR REPLACE INTO portfolio VALUES (?, ?, ?)',
+                        (kind, data['id'], json.dumps(data, ensure_ascii=False, allow_nan=False)))
+
+    def save_document(self, kind, data):
+        with self.db:
+            self._save_document(kind, data)
+
+    def model_jobs(self):
+        return [json.loads(row[0]) for row in self.db.execute('SELECT data FROM model_jobs ORDER BY id')]
+
+    def save_model_job(self, data):
+        with self.db:
+            self.db.execute('INSERT OR REPLACE INTO model_jobs VALUES (?, ?)',
+                            (data['id'], json.dumps(data, ensure_ascii=False)))

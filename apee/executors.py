@@ -71,15 +71,24 @@ class CodexExecutor:
             + json.dumps({"task": spec, "validation_commands": project["tests"],
                           "allowed_change_paths": project.get("allowed_paths")}, ensure_ascii=False, indent=2)
         )
+        return self.invoke(workspace, run_dir, prompt)
+
+    def invoke(self, workspace, run_dir, prompt, sandbox='workspace-write', schema=None):
+        run_dir = Path(run_dir)
+        run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
         args = [
-            self.config.codex, "exec", "--ignore-user-config", "--sandbox", "workspace-write",
+            self.config.codex, "exec", "--ignore-user-config", "--sandbox", sandbox,
             "-c", 'approval_policy="never"', "-c", "sandbox_workspace_write.network_access=false",
             "--disable", "multi_agent", "--json", "--color", "never", "-C", str(workspace),
             "--output-last-message", str(run_dir / "agent-summary.md"),
         ]
         if self.config.model:
             args += ["--model", self.config.model]
+        if schema is not None:
+            path = run_dir / 'schema.json'
+            path.write_text(json.dumps(schema), encoding='utf-8')
+            args += ['--output-schema', str(path)]
         args += ["-"]
         log = run_dir / "agent-events.log"
         command_error = None

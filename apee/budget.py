@@ -66,15 +66,26 @@ class Budget:
     def __init__(self, config, store):
         self.config, self.store = config, store
 
-    def begin(self, run):
-        record = dict(run_id=run['id'], at=now(), model=self.config.model,
+    def begin(self, run, phase=None, directory=None):
+        key = run['id'] if phase is None else run['id'] + ':' + phase
+        directory = Path(directory or self.config.state_dir / 'runs' / run['id'])
+        relative = directory.relative_to(self.config.state_dir) / 'agent-events.log'
+        record = dict(run_id=key, attempt_id=run['id'], phase=phase or 'development',
+                      lease_relative=str(Path(run['run_dir']).relative_to(self.config.state_dir)),
+                      log_relative=str(relative), at=now(), model=self.config.model,
                       prices=self.config.budget.get('prices_per_million'), status='pending',
                       usage=None, estimated_usd=None, source='model_started')
         self.store.save_usage(record)
+        return key
 
-    def finish(self, run):
-        record = next(item for item in self.store.usage_records() if item['run_id'] == run['id'])
-        usage = log_usage(self.config.state_dir / 'runs' / run['id'] / 'agent-events.log')
+    def finish(self, run, key=None):
+        key = key or run['id']
+        record = next(item for item in self.store.usage_records() if item['run_id'] == key)
+        log = record.get('log_relative') or str(Path('runs') / record.get('attempt_id', record['run_id']) / 'agent-events.log')
+        path = (self.config.state_dir / log).resolve()
+        if self.config.state_dir not in path.parents:
+            raise ApeeError('用量記錄不在狀態目錄內。')
+        usage = log_usage(path)
         record.update(status='known' if usage is not None else 'unknown', usage=usage,
                       estimated_usd=estimate(usage, record['prices']), source='codex_jsonl')
         self.store.save_usage(record)
@@ -99,8 +110,8 @@ class Budget:
         for record in self.records():
             if record['run_id'] not in stored:
                 self.store.save_usage(record)
-            elif record['status'] == 'pending' and lease_state(self.config.state_dir / 'runs' / record['run_id']) == 'idle':
-                self.finish(dict(id=record['run_id']))
+            elif record['status'] == 'pending' and lease_state(self.config.state_dir / record.get('lease_relative', str(Path('runs') / record.get('attempt_id', record['run_id'])))) == 'idle':
+                self.finish(dict(id=record.get('attempt_id', record['run_id'])), record['run_id'])
 
     def summary(self, day=None):
         if day is None:
@@ -151,13 +162,14 @@ class Budget:
     def record_manual(self, run_id, usage, estimated_usd, reason):
         if not reason.strip():
             raise ApeeError('人工核對需要原因。')
-        run = next((item for item in self.store.runs() if item['id'] == run_id), None)
+        previous = next((item for item in self.records() if item['run_id'] == run_id), None)
+        attempt_id = previous.get('attempt_id', run_id) if previous else run_id
+        run = next((item for item in [*self.store.runs(), *self.store.model_jobs()] if item['id'] == attempt_id), None)
         if not run:
             raise ApeeError('找不到指定嘗試。')
-        previous = next((item for item in self.records() if item['run_id'] == run_id), None)
-        if run.get('execution_backend') == 'imported_patch' or (not previous and run.get('execution_backend') != 'codex'):
+        if not previous and run.get('execution_backend') != 'codex':
             raise ApeeError('此嘗試沒有模型用量來源。')
-        lease = lease_state(self.config.state_dir / 'runs' / run_id)
+        lease = lease_state(self.config.state_dir / (previous or {}).get('lease_relative', str(Path('runs') / attempt_id)))
         legacy_complete = (lease == 'missing' and run.get('lease_version') is None
                            and previous and previous['status'] == 'known')
         if lease != 'idle' and not legacy_complete:

@@ -42,7 +42,7 @@ def build(config, output=None, runner=None):
         atomic_write(app/'Contents/Info.plist', plistlib.dumps(info))
         runner.run(['/usr/bin/xcrun', 'swiftc', '-swift-version', '5', '-parse-as-library', '-O',
                     '-target', platform.machine() + '-apple-macosx14.0',
-                    '-framework', 'SwiftUI', '-framework', 'AppKit', str(source), '-o', str(binary)], timeout=180)
+                    '-framework', 'SwiftUI', '-framework', 'AppKit', '-framework', 'UserNotifications', str(source), '-o', str(binary)], timeout=180)
         binary.chmod(0o700)
         runner.run(['/usr/bin/codesign', '--force', '--sign', '-', '--identifier', 'com.apee.desktop', str(app)], timeout=30)
         runner.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], timeout=30)

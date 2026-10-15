@@ -111,6 +111,38 @@ class Config:
             for key, value in prices.items():
                 money(value, "budget.prices_per_million." + key)
         self.budget = budget
+        quality = data.get('quality', {})
+        if (not isinstance(quality, dict) or set(quality) - {'enabled', 'max_repairs'}
+                or type(quality.get('enabled', False)) is not bool):
+            raise ApeeError('quality 設定無法辨識。')
+        repairs = quality.get('max_repairs', 1)
+        if type(repairs) is not int or not 0 <= repairs <= 3:
+            raise ApeeError('quality.max_repairs 必須是 0–3 的整數。')
+        self.quality = dict(enabled=quality.get('enabled', False), max_repairs=repairs)
+        ci = data.get('ci_repair', {})
+        if (not isinstance(ci, dict) or set(ci) - {'enabled', 'max_attempts_per_pr'}
+                or type(ci.get('enabled', False)) is not bool):
+            raise ApeeError('ci_repair 設定無法辨識。')
+        self.ci_repair = dict(enabled=ci.get('enabled', False),
+            max_attempts_per_pr=positive_int(ci.get('max_attempts_per_pr', 1), 'ci_repair.max_attempts_per_pr', 3))
+        planning = data.get('planning', {})
+        if (not isinstance(planning, dict) or set(planning) - {'enabled', 'max_active_projects', 'max_new_tasks_per_cycle', 'max_pending_candidates', 'max_calls_per_day'}
+                or type(planning.get('enabled', False)) is not bool):
+            raise ApeeError('planning 設定無法辨識。')
+        self.planning = dict(enabled=planning.get('enabled', False),
+            max_active_projects=positive_int(planning.get('max_active_projects', 20), 'planning.max_active_projects', 100),
+            max_new_tasks_per_cycle=positive_int(planning.get('max_new_tasks_per_cycle', 1), 'planning.max_new_tasks_per_cycle', 5),
+            max_pending_candidates=positive_int(planning.get('max_pending_candidates', 5), 'planning.max_pending_candidates', 20),
+            max_calls_per_day=positive_int(planning.get('max_calls_per_day', 1), 'planning.max_calls_per_day', 20))
+        notifications = data.get('notifications', {})
+        if (not isinstance(notifications, dict) or set(notifications)-{'enabled', 'app_path', 'max_attempts'}
+                or type(notifications.get('enabled', False)) is not bool):
+            raise ApeeError('notifications 設定無法辨識。')
+        app_path = notifications.get('app_path')
+        if app_path is not None and (not isinstance(app_path, str) or not Path(app_path).is_absolute() or not app_path.endswith('.app')):
+            raise ApeeError('桌面通知需要絕對 .app 路徑。')
+        self.notifications = dict(enabled=notifications.get('enabled', False), app_path=app_path,
+            max_attempts=positive_int(notifications.get('max_attempts', 6), 'notifications.max_attempts', 20))
         projects = data.get("projects", [])
         if not isinstance(projects, list):
             raise ApeeError("projects 必須是陣列。")
@@ -129,6 +161,10 @@ class Config:
             label = item.get("issue_label", "apee:ready")
             if not isinstance(label, str) or not label.strip() or "," in label:
                 raise ApeeError("issue_label 必須是一個非空標籤。")
+            base = item.get('base_branch')
+            if base is not None and (not isinstance(base, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9/_.-]{0,199}', base)
+                    or '..' in base or '//' in base or base.endswith(('/', '.')) or any(part.endswith('.lock') for part in base.split('/'))):
+                raise ApeeError('base_branch 必須是明確的 Git 分支名稱。')
             tests = commands(item.get("tests", []), f"{name}.tests", required=enabled)
             setup = commands(item.get("setup", []), f"{name}.setup")
             config_dir = str(self.path.parent)

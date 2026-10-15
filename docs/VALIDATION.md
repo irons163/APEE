@@ -1,5 +1,12 @@
 # APEE 驗證紀錄
 
+## 2026-10-14：1.0 完整功能驗收
+`APEE_NATIVE_TESTS=1 python3 -B -m unittest discover -s tests -v`：**189 tests，92.819 秒，OK，沒有略過**。包含 6 項原生 sandbox、launchd 與編譯簽署驗證。
+
+另已通過真實 Codex 規劃／修復／獨立審查、GitHub Actions 失敗後修復同一 PR 至通過，以及完整原生 UI 與 macOS 通知驗收。整體源碼審查找出三項 P2 後，各以有意義的重現回歸修正；重新審查無阻擋 findings。
+
+正式本機 app 及服務已更新為 1.0.0；保存 0.6.1 備份、不可變程式與原 SQLite，原始 135 個執行檔案及 411,080 tokens 均核對保留。詳細矩陣、證據路徑與平台容量限制見 [COMPLETION.md](COMPLETION.md)。下方版本資料保留歷史結果。
+
 最新日期：2026-10-14，Asia/Taipei。下方保留先前版本的歷史驗證結果。
 
 ## 結果
