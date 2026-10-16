@@ -2,11 +2,13 @@
 
 ## 2026-10-16：1.0.1 公開發佈候選
 
-以 `APEE_NATIVE_TESTS=1` 及已核對的 `APEE_RELEASE_RUNTIME` 執行完整套件：**199 tests，149.130 秒，OK，沒有略過**，包含 7 項原生驗證。記錄保存在 instance 的 `test-results-v1.0.1.log`。
+以 `APEE_NATIVE_TESTS=1` 及已核對的 `APEE_RELEASE_RUNTIME` 執行完整套件：**202 tests，321.659 秒，OK，沒有略過**，包含 7 項原生驗證。完整程式提交 `db2d8fcde6cb927900934e814ad43795a7c64d9d` 的記錄保存在 instance 的 `test-results-v1.0.1-release.log`。
 
 新增驗證涵蓋 runtime SHA-256、解壓路徑與連結逃逸、初次設定原子建立／並行開啟／舊檔保留、停用的公開預設值、必要 Codex 介面，以及真正 ZIP 的編譯、解壓、刪除建置資料、兩次搬移、首次空白啟動與預算保留。最後的封裝來源核對、空白 instance override 防護與 ignored 私人檔案排除另以 `test-release-native-v1.0.1-final2.log` 保存 10 項定向回歸。
 
 `doctor` 已實際核對 Git、GitHub CLI、Codex CLI、登入及必要命令介面。Python runtime 來自固定的 python-build-standalone 20261013 發佈，SHA-256 在執行前核對；21 份上游授權檔案另核對 Git blob 與 SHA-256 後保留。MIT 授權由使用者明確選定。
+
+原生視窗驗收辨識出 Finder 工具 PATH 與終端機不同，以及同步等待 bootstrap 時的偶發 SwiftUI 啟動崩潰。已提供桌面 CLI 路徑選擇／儲存、每次命令更新工具環境，並將 bootstrap 移至背景。修正後三次完整啟動成功；實際儲存路徑後立即通過工具檢查，重開仍保留；空白任務表單提示先加入專案且不能入列。證據為 `release-work/ui-v2-verified.json`；隔離資料沒有任務、模型呼叫或服務。正式資料仍為 1 項任務、2 次嘗試、14 個事件及 2 份用量紀錄。
 
 這些是本機與 Apple Silicon 的驗收；Developer ID 憑證及 Apple 公證尚未取得，不能宣稱正式下載版已完成。Intel 架構亦未在 Intel Mac 實測。發佈條件見 [RELEASING.md](RELEASING.md)，歷史 1.0 安裝與用量證據保持。
 

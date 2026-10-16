@@ -2,7 +2,7 @@
 
 把多個 GitHub 專案的任務排進同一個循環：**取得任務 → 獨立 checkout → 自動開發 → 測試與審查 → 交付 Draft PR → 追蹤成果**。
 
-目前為 **1.0.1 公開發佈候選版本**。1.0 的完整功能已驗收並合併；1.0.1 整理公開預設值、安裝文件及內含 Python 的可攜式 macOS app。公開下載狀態以 [發佈紀錄](docs/RELEASING.md) 與 Release 的 `release.json` 為準；`-preview.zip` 是尚未公證的驗收包。
+目前為 **1.0.1**。1.0 的完整功能已驗收並合併；1.0.1 整理 MIT 授權、公開預設值、安裝文件及內含 Python 的可攜式 macOS app。公開下載狀態以 [發佈紀錄](docs/RELEASING.md) 與 Release 的 `release.json` 為準；`-preview.zip` 是尚未公證的驗收包。
 
 ## 功能
 
