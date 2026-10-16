@@ -255,8 +255,9 @@ class Service:
                 output = self.runner.run(prefix + command, cwd=self.source_root, timeout=30)
             except ApeeError:
                 raise ApeeError(f"背景環境的 {name} 不可用；請完成安裝或登入後再啟動。") from None
-            required = {"Codex sandbox 介面": "--permission-profile", "Codex exec 介面": "--ignore-user-config"}.get(name)
-            if required and required not in output:
+            required = {"Codex sandbox 介面": ('--permission-profile', '--include-managed-config'),
+                        "Codex exec 介面": ('--ignore-user-config', '--output-schema', '--output-last-message')}.get(name, ())
+            if any(flag not in output for flag in required):
                 raise ApeeError(f"背景環境的 {name} 缺少必要支援。")
         self._background_probe(definition, prefix, config.state_dir)
 
