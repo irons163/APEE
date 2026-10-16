@@ -15,8 +15,10 @@ from unittest.mock import patch
 
 from apee.config import ApeeError, Config
 from apee.cli import doctor
+from apee.controls import configure
 from apee.portable import initialize
 from apee.release import extract_runtime, package
+from apee.service import Service
 
 
 class PortableReleaseTests(unittest.TestCase):
@@ -121,6 +123,41 @@ class PortableReleaseTests(unittest.TestCase):
                 package('missing.tar.gz', '0'*64, self.root/'output', notary_profile='profile')
             with self.assertRaisesRegex(ApeeError, 'Developer ID'):
                 package('missing.tar.gz', '0'*64, self.root/'output', signing_identity='Apple Development: fixture')
+
+    def test_codex_setting_preserves_projects_and_rejects_bad_paths(self):
+        path = self.root/'config.json'
+        project = dict(repo='example/demo', enabled=False, tests=[['{config_dir}/check']], unknown='preserve')
+        path.write_text(json.dumps(dict(version=1, projects=[project], budget=dict(daily_tokens=1234))))
+        configure(Config(path), {'codex': str(self.root/'tools with spaces/codex')})
+        data = json.loads(path.read_text())
+        self.assertEqual(data['projects'], [project])
+        self.assertEqual(data['budget'], dict(daily_tokens=1234))
+        saved = path.read_bytes()
+        for invalid in ('', '~/bin/codex', 'relative/bin/codex', 42):
+            with self.subTest(invalid=invalid), self.assertRaises(ApeeError):
+                configure(Config(path), {'codex': invalid})
+            self.assertEqual(path.read_bytes(), saved)
+
+    def test_cli_sibling_runtime_is_found_from_finder_and_old_service_env_is_rejected(self):
+        tools = self.root/'node version/bin'
+        tools.mkdir(parents=True)
+        node = tools/'node'
+        node.write_text('#!/bin/sh\nprintf "fixture-node-executed\\n"\n')
+        node.chmod(0o755)
+        codex = tools/'codex'
+        codex.write_text('#!/bin/sh\nexec node "$@"\n')
+        codex.chmod(0o755)
+        path = self.root/'config.json'
+        path.write_text(json.dumps(dict(version=1, codex=str(codex), projects=[])))
+        service = Service(path)
+        with patch.dict(os.environ, {'PATH':'/usr/bin:/bin'}, clear=True):
+            environment = service.environment()
+        result = subprocess.run([str(codex), '--version'], env=environment, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'fixture-node-executed')
+        stale = dict(environment, PATH='/usr/bin:/bin')
+        with self.assertRaisesRegex(ApeeError, '重新安裝'):
+            service.definition(environment=stale)
 
     def test_doctor_rejects_incomplete_exec_and_managed_permissions_interfaces(self):
         defaults = self.root/'defaults.json'

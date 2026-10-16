@@ -1082,6 +1082,7 @@ struct WorkflowPanel: View {
     @State private var interval = 300
     @State private var serviceTasks = 1
     @State private var permission = "檢查中"
+    @State private var codexPath = "codex"
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -1142,6 +1143,19 @@ struct WorkflowPanel: View {
     var servicePanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("背景服務").font(.headline)
+            TextField("Codex CLI 執行檔名稱或絕對路徑", text: $codexPath).textFieldStyle(.roundedBorder)
+            HStack {
+                Button("選擇 CLI 執行檔") {
+                    let panel = NSOpenPanel()
+                    panel.canChooseDirectories = false
+                    panel.allowsMultipleSelection = false
+                    panel.begin { response in
+                        if response == .OK, let url = panel.url { codexPath = url.path }
+                    }
+                }
+                Button("儲存 CLI 路徑") { model.save(["codex": codexPath.trimmingCharacters(in: .whitespacesAndNewlines)]) }
+            }.disabled(model.busy)
+            Text("從 Finder 開啟時可能找不到終端機的工具路徑。可選擇已安裝的 Codex CLI；變更後先檢查工具，已有服務時重新安裝以更新環境。").font(.caption).foregroundStyle(.secondary)
             Stepper("每 \(interval) 秒檢查一輪", value: $interval, in: 60...86400, step: 60)
             Stepper("每次喚醒最多開始 \(serviceTasks) 次開發嘗試", value: $serviceTasks, in: 1...20)
             HStack {
@@ -1164,6 +1178,7 @@ struct WorkflowPanel: View {
         }
     }
     func load() {
+        codexPath = model.data["codex"] as? String ?? "codex"
         let q = model.data["quality"] as? [String: Any] ?? [:]
         quality = q["enabled"] as? Bool ?? false; repairs = q["max_repairs"] as? Int ?? 1
         let c = model.data["ci_repair"] as? [String: Any] ?? [:]

@@ -91,6 +91,9 @@ class Service:
             if os.environ.get(key):
                 env[key] = os.environ[key]
         paths = [str(Path.home() / ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"]
+        codex = Path(Config(self.config_path).codex)
+        if codex.is_absolute():
+            paths.insert(0, str(codex.parent))
         paths += [part for part in os.environ.get("PATH", "").split(os.pathsep) if Path(part).is_absolute()]
         paths += ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
         env["PATH"] = os.pathsep.join(dict.fromkeys(paths))
@@ -114,6 +117,8 @@ class Service:
             if key in env and not Path(env[key]).is_absolute():
                 raise ApeeError(f"背景環境的 {key} 必須是絕對路徑。")
         config = Config(self.config_path)
+        if Path(config.codex).is_absolute() and str(Path(config.codex).parent) not in env['PATH'].split(os.pathsep):
+            raise ApeeError('Codex CLI 位置已變更；請移除並重新安裝背景服務以更新工具環境。')
         args = ["/usr/bin/env", "-i", *[f"{key}={value}" for key, value in sorted(env.items())],
                 self.python, "-B", "-u", "-m", "apee", "--config", str(self.config_path),
                 "work", "--max-cycles", "1", "--max-tasks", str(max_tasks),

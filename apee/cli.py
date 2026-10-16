@@ -82,7 +82,7 @@ def parser():
     sub.add_parser("status", help="列出任務進度")
     sub.add_parser("report", help="產生中文總覽")
     sub.add_parser('snapshot', help='桌面介面的本機 JSON 狀態，不連網')
-    settings = sub.add_parser('configure', help='更新用量與恢復政策，保留專案原始設定')
+    settings = sub.add_parser('configure', help='更新 CLI、模型與工作流程政策，保留專案原始設定')
     settings.add_argument('--settings-json', required=True)
     portfolio = sub.add_parser('portfolio', help='目標、依賴、回饋、指標與候選工作')
     portfolio_actions = portfolio.add_subparsers(dest='portfolio_action', required=True)

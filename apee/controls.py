@@ -35,8 +35,10 @@ def save_config(config, data):
 
 
 def configure(config, changes):
-    if not isinstance(changes, dict) or set(changes) - {'model', 'budget', 'auto_recovery', 'quality', 'ci_repair', 'planning', 'notifications'}:
+    if not isinstance(changes, dict) or set(changes) - {'codex', 'model', 'budget', 'auto_recovery', 'quality', 'ci_repair', 'planning', 'notifications'}:
         raise ApeeError('設定欄位無法辨識。')
+    if 'codex' in changes and isinstance(changes['codex'], str) and '/' in changes['codex'] and not Path(changes['codex']).is_absolute():
+        raise ApeeError('Codex CLI 請使用執行檔名稱或絕對路徑。')
     latest = latest_config(config)
     return save_config(config, dict(latest.data, **changes))
 
@@ -101,7 +103,7 @@ def snapshot(engine):
     for project in projects: project['base_branch'] = raw[project['repo']].get('base_branch')
     return dict(version=__version__, at=now(), config=str(engine.config.path),
                 state_dir=str(engine.config.state_dir), overview=str(engine.config.state_dir/'overview.md'),
-                tasks=tasks, projects=projects, attempts=engine.store.attempts_today(),
+                tasks=tasks, projects=projects, attempts=engine.store.attempts_today(), codex=engine.config.codex,
                 daily_attempt_limit=engine.config.daily_attempt_limit,
                 worker_active=engine.store.worker_active(), engine_active=engine.store.engine_active(),
                 paused=engine.store.control('paused'), codex_hold=engine.store.control('codex_hold'),

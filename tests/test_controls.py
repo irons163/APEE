@@ -525,6 +525,7 @@ class SettingsAndDesktopTests(ControlsFixture):
                 self.assertEqual(main(['--config',str(self.path),'snapshot']),0)
         result=json.loads(output.getvalue())
         self.assertEqual(result['version'],__version__)
+        self.assertEqual(result['codex'],self.config.codex)
         self.assertEqual(result['tasks'],[])
         self.assertEqual(result['budget']['tokens'],0)
         self.assertEqual(self.engine.store.total_attempts(),before)
