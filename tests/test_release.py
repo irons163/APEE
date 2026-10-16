@@ -159,6 +159,32 @@ class PortableReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ApeeError, '重新安裝'):
             service.definition(environment=stale)
 
+    def test_app_command_refreshes_new_cli_path_without_restarting(self):
+        tools = self.root/'Finder PATH'
+        tools.mkdir()
+        for name in ('git', 'gh'):
+            tool = tools/name
+            tool.write_text('#!/bin/sh\nprintf "fixture-tool\\n"\n')
+            tool.chmod(0o755)
+        sibling = self.root/'new node version/bin'
+        sibling.mkdir(parents=True)
+        for name in ('git', 'gh'):
+            shutil.copy2(tools/name, sibling/name)
+        node = sibling/'node'
+        node.write_text('#!/bin/sh\nprintf "%s\\n" "--permission-profile --include-managed-config --ignore-user-config --output-schema --output-last-message"\n')
+        node.chmod(0o755)
+        codex = sibling/'codex'
+        codex.write_text('#!/bin/sh\nexec node "$@"\n')
+        codex.chmod(0o755)
+        config = self.root/'config.json'
+        config.write_text(json.dumps(dict(version=1, projects=[], codex=str(codex))))
+        bootstrap = Path(__file__).resolve().parents[1]/'apee/portable.py'
+        environment = dict(os.environ, PATH=str(tools)+':/usr/bin:/bin')
+        result = subprocess.run([sys.executable, '-I', '-B', str(bootstrap), 'run', str(config), 'doctor'],
+                                env=environment, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+        self.assertIn('✓ Codex exec', result.stdout)
+
     def test_doctor_rejects_incomplete_exec_and_managed_permissions_interfaces(self):
         defaults = self.root/'defaults.json'
         defaults.write_text('{"version":1,"projects":[]}')

@@ -64,6 +64,9 @@ def main(argv=None):
             print(json.dumps(describe(args[1]), ensure_ascii=False))
             return 0
         if len(args) >= 3 and args[0] == 'run':
+            # A saved CLI path takes effect immediately, without restarting
+            # the app or relying on Finder's inherited shell environment.
+            os.environ.update(Service(args[1]).environment())
             from apee.cli import main as cli
             return cli(['--config', args[1], *args[2:]])
         raise ApeeError('無法辨識 app 執行參數。')

@@ -32,7 +32,8 @@ def build(config, output=None, runner=None):
         resources.mkdir()
         service = Service(config.path)
         backend = dict(python=str(Path(sys.executable).resolve()), root=str(source.parent.parent),
-                       config=str(config.path), environment=service.environment())
+                       config=str(config.path), environment=service.environment(),
+                       bootstrap=str(source.with_name('portable.py')))
         atomic_write(resources/'backend.json', (json.dumps(backend, indent=2)+'\n').encode())
         info = dict(CFBundleIdentifier='com.apee.desktop', CFBundleName='APEE',
                     CFBundleDisplayName='APEE', CFBundleExecutable='APEE',

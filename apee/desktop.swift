@@ -73,13 +73,31 @@ final class DashboardModel: ObservableObject {
     @Published var busy = false
     @Published var message = ""
     @Published var error = false
-    private let backend: Backend?
-    private let startupError: String?
+    private var backend: Backend?
+    private var startupError: String?
 
     init() {
-        do { backend = try Backend.load(); startupError = nil }
-        catch { backend = nil; startupError = error.localizedDescription }
-        refresh()
+        // Process.waitUntilExit may service a run loop. Keep bundle bootstrap
+        // outside SwiftUI's initial view graph construction on the main thread.
+        busy = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let resolved = try Backend.load()
+                DispatchQueue.main.async {
+                    self.backend = resolved
+                    self.busy = false
+                    self.refresh()
+                }
+            } catch {
+                let failure = error.localizedDescription
+                DispatchQueue.main.async {
+                    self.startupError = failure
+                    self.message = failure
+                    self.error = true
+                    self.busy = false
+                }
+            }
+        }
     }
 
     var tasks: [[String: Any]] { data["tasks"] as? [[String: Any]] ?? [] }
