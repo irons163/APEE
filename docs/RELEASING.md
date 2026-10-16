@@ -23,6 +23,8 @@ python3 -B -m apee desktop package \
 
 輸出包含 `APEE.app`、ZIP、`SHA256SUMS`、`release.json` 及安裝說明。app 只包含固定程式、空白初始設定、Python 與原始授權聲明；不讀取建置者的 `apee.local.json`，不保存其 PATH、HOME、CLI 登入或執行紀錄。路徑在使用者開啟 app 時才依 bundle 與使用者目錄決定。
 
+程式與授權檔只從 Git 追蹤的檔案清單複製，不掃入 ignored 設定、virtualenv 或其他私人檔案。封裝包含 `source-payload.json` 的檔案雜湊，`release.json` 核對封裝內容與 checkout 是否一致；未知來源、工作目錄未提交或內容不符時，不會標示為可正式公開。
+
 未指定簽章時，輸出明確命名為 `-preview.zip`，`notarized` 與 `public_app_ready` 為 `false`。這種封裝可供維護者驗收，不能標示為已通過 Gatekeeper 的正式下載版。
 
 ## 正式簽章與 Apple 公證

@@ -144,11 +144,23 @@ class NativePortableReleaseTests(unittest.TestCase):
         cache.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix='apee-portable-native-', dir=cache) as temporary:
             root = Path(temporary)
-            pin = json.loads((Path(__file__).resolve().parents[1]/'release/python-runtimes.json').read_text())['arm64']
+            source = Path(__file__).resolve().parents[1]
+            # A private file ignored by Git must not be swept into the app.
+            private_dir = source/'apee/.venv'
+            created_dir = not private_dir.exists()
+            private_dir.mkdir(exist_ok=True)
+            if created_dir:
+                self.addCleanup(private_dir.rmdir)
+            fd, private_name = tempfile.mkstemp(prefix='release-private-', suffix='.json', dir=private_dir)
+            self.addCleanup(Path(private_name).unlink)
+            with os.fdopen(fd, 'w') as private:
+                private.write('{"secret":"fixture-private-file"}')
+            pin = json.loads((source/'release/python-runtimes.json').read_text())['arm64']
             built = package(os.environ['APEE_RELEASE_RUNTIME'], pin['sha256'], root/'Build with spaces', architecture='arm64')
             self.assertFalse(built['notarized'])
             self.assertFalse(built['public_app_ready'])
             self.assertTrue(built['source_payload_matches_checkout'])
+            self.assertFalse((Path(built['app'])/'Contents/Resources/backend/apee/.venv').exists())
             installed = root/'Installed elsewhere/APEE.app'
             installed.parent.mkdir()
             subprocess.run(['/usr/bin/ditto', '-x', '-k', str(Path(built['output'])/built['archive']), str(installed.parent)], check=True)

@@ -6,7 +6,6 @@ import os
 import platform
 import plistlib
 import re
-import shutil
 import sys
 import tarfile
 import tempfile
@@ -101,6 +100,16 @@ def package(runtime_archive, runtime_sha256, output, architecture=None,
     if config.projects:
         raise ApeeError('公開版預設設定必須沒有啟用或個人專案。')
     runner = runner or Runner()
+    tracked = runner.git(source, 'ls-files', '--', 'apee', 'release/python-licenses').splitlines()
+    modules = [name for name in tracked if re.fullmatch(r'apee/[A-Za-z0-9_]+\.(?:py|swift)', name)]
+    licenses = [name for name in tracked if re.fullmatch(r'release/python-licenses/[A-Za-z0-9_.-]+', name)]
+    if not {'apee/__init__.py', 'apee/portable.py', 'apee/desktop.swift'}.issubset(modules):
+        raise ApeeError('公開封裝需要完整且由 Git 追蹤的程式碼。')
+    if 'release/python-licenses/origins.json' not in licenses:
+        raise ApeeError('缺少 Python 與其相依元件的原始授權聲明。')
+    for name in [*modules, *licenses, 'apee.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md']:
+        if (source/name).is_symlink():
+            raise ApeeError('封裝來源不可使用指向其他位置的符號連結。')
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.apee-package-', dir=output.parent) as temporary:
         stage = Path(temporary)
@@ -112,16 +121,17 @@ def package(runtime_archive, runtime_sha256, output, architecture=None,
         runtime_arch = runner.run(['/usr/bin/lipo', '-archs', str(python)]).strip().split()
         if architecture not in runtime_arch:
             raise ApeeError('Python runtime 與安裝包架構不一致。')
-        shutil.copytree(source/'apee', resources/'backend/apee',
-                        ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+        # Never sweep ignored local settings, virtualenvs, or other private files
+        # into a public artifact, even if they are placed inside the package.
+        for name in modules:
+            write(resources/'backend'/name, (source/name).read_bytes())
         write(resources/'portable.json', b'{"schema":1}\n')
         write(resources/'default-config.json', (source/'apee.json').read_bytes())
         for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md'):
             if (source/name).is_file():
                 write(resources/name, (source/name).read_bytes())
-        if not (source/'release/python-licenses/origins.json').is_file():
-            raise ApeeError('缺少 Python 與其相依元件的原始授權聲明。')
-        shutil.copytree(source/'release/python-licenses', resources/'python-licenses')
+        for name in licenses:
+            write(resources/'python-licenses'/Path(name).name, (source/name).read_bytes())
         payload = {str(path.relative_to(resources/'backend')): sha256(path)
                    for path in (resources/'backend/apee').rglob('*') if path.is_file()}
         payload['apee.json'] = sha256(resources/'default-config.json')

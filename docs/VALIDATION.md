@@ -4,7 +4,7 @@
 
 以 `APEE_NATIVE_TESTS=1` 及已核對的 `APEE_RELEASE_RUNTIME` 執行完整套件：**199 tests，149.130 秒，OK，沒有略過**，包含 7 項原生驗證。記錄保存在 instance 的 `test-results-v1.0.1.log`。
 
-新增驗證涵蓋 runtime SHA-256、解壓路徑與連結逃逸、初次設定原子建立／並行開啟／舊檔保留、停用的公開預設值、必要 Codex 介面，以及真正 ZIP 的編譯、解壓、刪除建置資料、兩次搬移、首次空白啟動與預算保留。最後的封裝來源核對與空白 instance override 防護另以 `test-release-native-v1.0.1-final.log` 保存定向回歸。
+新增驗證涵蓋 runtime SHA-256、解壓路徑與連結逃逸、初次設定原子建立／並行開啟／舊檔保留、停用的公開預設值、必要 Codex 介面，以及真正 ZIP 的編譯、解壓、刪除建置資料、兩次搬移、首次空白啟動與預算保留。最後的封裝來源核對、空白 instance override 防護與 ignored 私人檔案排除另以 `test-release-native-v1.0.1-final2.log` 保存 10 項定向回歸。
 
 `doctor` 已實際核對 Git、GitHub CLI、Codex CLI、登入及必要命令介面。Python runtime 來自固定的 python-build-standalone 20261013 發佈，SHA-256 在執行前核對；21 份上游授權檔案另核對 Git blob 與 SHA-256 後保留。MIT 授權由使用者明確選定。
 
