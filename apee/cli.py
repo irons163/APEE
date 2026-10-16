@@ -82,7 +82,7 @@ def parser():
     sub.add_parser("status", help="列出任務進度")
     sub.add_parser("report", help="產生中文總覽")
     sub.add_parser('snapshot', help='桌面介面的本機 JSON 狀態，不連網')
-    settings = sub.add_parser('configure', help='更新用量與恢復政策，保留專案原始設定')
+    settings = sub.add_parser('configure', help='更新 CLI、模型與工作流程政策，保留專案原始設定')
     settings.add_argument('--settings-json', required=True)
     portfolio = sub.add_parser('portfolio', help='目標、依賴、回饋、指標與候選工作')
     portfolio_actions = portfolio.add_subparsers(dest='portfolio_action', required=True)
@@ -119,6 +119,13 @@ def parser():
     build = desktops.add_parser('build')
     build.add_argument('--output', type=Path)
     build.add_argument('--open', action='store_true')
+    package = desktops.add_parser('package', help='製作內含 Python 的可攜式 macOS 安裝包')
+    package.add_argument('--runtime-archive', type=Path, required=True)
+    package.add_argument('--runtime-sha256', required=True)
+    package.add_argument('--output', type=Path, required=True)
+    package.add_argument('--architecture', choices=('arm64', 'x86_64'))
+    package.add_argument('--signing-identity')
+    package.add_argument('--notary-profile')
     return p
 
 
@@ -143,14 +150,17 @@ def doctor(config):
         except ApeeError:
             failed = True
             print(f"✗ {name}：不可用；請檢查安裝或登入")
-    try:
-        help_text = runner.run([config.codex, "sandbox", "--help"])
-        if "--permission-profile" not in help_text:
-            raise ApeeError("缺少 sandbox permission-profile 支援。")
-        print("✓ 測試執行介面：支援明確權限設定")
-    except ApeeError as exc:
-        failed = True
-        print(f"✗ {exc}")
+    for command, flags in (('sandbox', ('--permission-profile', '--include-managed-config')),
+                           ('exec', ('--ignore-user-config', '--output-schema', '--output-last-message'))):
+        try:
+            help_text = runner.run([config.codex, command, '--help'])
+            missing = [flag for flag in flags if flag not in help_text]
+            if missing:
+                raise ApeeError('缺少 '+command+' 必要介面：'+', '.join(missing))
+            print('✓ Codex '+command+'：必要介面可用')
+        except ApeeError:
+            failed = True
+            print('✗ Codex '+command+' 必要介面不可用；請安裝相容版本')
     return int(failed)
 
 
@@ -187,6 +197,11 @@ def main(argv=None):
         if args.command == "doctor":
             return doctor(config)
         if args.command == 'desktop':
+            if args.desktop_action == 'package':
+                from .release import package
+                emit(package(args.runtime_archive, args.runtime_sha256, args.output,
+                             args.architecture, args.signing_identity, args.notary_profile))
+                return 0
             from .desktop import build, open_app
             result = build(config, args.output)
             emit(result)

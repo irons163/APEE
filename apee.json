@@ -7,34 +7,31 @@
   "max_tasks_per_cycle": 1,
   "daily_attempt_limit": 10,
   "max_pr_checks_per_cycle": 20,
-  "quality": {"enabled": true, "max_repairs": 1},
-  "ci_repair": {"enabled": true, "max_attempts_per_pr": 1},
-  "planning": {"enabled": false, "max_active_projects": 2, "max_new_tasks_per_cycle": 1, "max_pending_candidates": 5, "max_calls_per_day": 1},
-  "notifications": {"enabled": false, "max_attempts": 6},
-  "projects": [
-    {
-      "repo": "irons163/codex-pool-manager",
-      "enabled": true,
-      "priority": 1,
-      "issue_label": "apee:ready",
-      "tests": [
-        [
-          "bash",
-          "scripts/test_generate_sparkle_appcast.sh"
-        ],
-        [
-          "/usr/bin/python3",
-          "-B",
-          "{config_dir}/pilot_checks/check_appcast_xml.py"
-        ]
-      ],
-      "setup": [],
-      "setup_network": false,
-      "publish_draft": true,
-      "allowed_paths": [
-        "scripts/generate_sparkle_appcast.sh",
-        "scripts/test_generate_sparkle_appcast.sh"
-      ]
-    }
-  ]
+  "quality": {
+    "enabled": true,
+    "max_repairs": 1
+  },
+  "ci_repair": {
+    "enabled": true,
+    "max_attempts_per_pr": 1
+  },
+  "planning": {
+    "enabled": false,
+    "max_active_projects": 2,
+    "max_new_tasks_per_cycle": 1,
+    "max_pending_candidates": 5,
+    "max_calls_per_day": 1
+  },
+  "notifications": {
+    "enabled": false,
+    "max_attempts": 6
+  },
+  "projects": [],
+  "auto_recovery": {
+    "enabled": false,
+    "max_retries": 1,
+    "cooldown_seconds": 300,
+    "max_per_cycle": 1
+  },
+  "budget": {}
 }

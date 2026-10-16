@@ -1,5 +1,17 @@
 # APEE 驗證紀錄
 
+## 2026-10-16：1.0.1 公開發佈候選
+
+以 `APEE_NATIVE_TESTS=1` 及已核對的 `APEE_RELEASE_RUNTIME` 執行完整套件：**202 tests，321.659 秒，OK，沒有略過**，包含 7 項原生驗證。完整程式提交 `db2d8fcde6cb927900934e814ad43795a7c64d9d` 的記錄保存在 instance 的 `test-results-v1.0.1-release.log`。
+
+新增驗證涵蓋 runtime SHA-256、解壓路徑與連結逃逸、初次設定原子建立／並行開啟／舊檔保留、停用的公開預設值、必要 Codex 介面，以及真正 ZIP 的編譯、解壓、刪除建置資料、兩次搬移、首次空白啟動與預算保留。最後的封裝來源核對、空白 instance override 防護與 ignored 私人檔案排除另以 `test-release-native-v1.0.1-final2.log` 保存 10 項定向回歸。
+
+`doctor` 已實際核對 Git、GitHub CLI、Codex CLI、登入及必要命令介面。Python runtime 來自固定的 python-build-standalone 20261013 發佈，SHA-256 在執行前核對；21 份上游授權檔案另核對 Git blob 與 SHA-256 後保留。MIT 授權由使用者明確選定。
+
+原生視窗驗收辨識出 Finder 工具 PATH 與終端機不同，以及同步等待 bootstrap 時的偶發 SwiftUI 啟動崩潰。已提供桌面 CLI 路徑選擇／儲存、每次命令更新工具環境，並將 bootstrap 移至背景。修正後三次完整啟動成功；實際儲存路徑後立即通過工具檢查，重開仍保留；空白任務表單提示先加入專案且不能入列。證據為 `release-work/ui-v2-verified.json`；隔離資料沒有任務、模型呼叫或服務。正式資料仍為 1 項任務、2 次嘗試、14 個事件及 2 份用量紀錄。
+
+這些是本機與 Apple Silicon 的驗收；Developer ID 憑證及 Apple 公證尚未取得，不能宣稱正式下載版已完成。Intel 架構亦未在 Intel Mac 實測。發佈條件見 [RELEASING.md](RELEASING.md)，歷史 1.0 安裝與用量證據保持。
+
 ## 2026-10-14：1.0 完整功能驗收
 `APEE_NATIVE_TESTS=1 python3 -B -m unittest discover -s tests -v`：**189 tests，92.819 秒，OK，沒有略過**。包含 6 項原生 sandbox、launchd 與編譯簽署驗證。
 
@@ -7,11 +19,11 @@
 
 正式本機 app 及服務已更新為 1.0.0；保存 0.6.1 備份、不可變程式與原 SQLite，原始 135 個執行檔案及 411,080 tokens 均核對保留。詳細矩陣、證據路徑與平台容量限制見 [COMPLETION.md](COMPLETION.md)。下方版本資料保留歷史結果。
 
-最新日期：2026-10-14，Asia/Taipei。下方保留先前版本的歷史驗證結果。
+歷史紀錄截至 2026-10-14，Asia/Taipei。下方保留先前版本的驗證結果。
 
 ## 結果
 
-目前 **0.6.1 通過 137 項測試**，包含 4 項原生 sandbox 驗證、1 項原生 launchd 驗證與 1 項原生桌面 app 驗證，沒有跳過項目。在 0.6 的恢復、預算及桌面控制上，補齊專案與任務入口，以及歷史用量查詢。
+0.6.1 當時通過 **137 項測試**，包含 4 項原生 sandbox 驗證、1 項原生 launchd 驗證與 1 項原生桌面 app 驗證，沒有跳過項目。在 0.6 的恢復、預算及桌面控制上，補齊專案與任務入口，以及歷史用量查詢。
 
 **真實「模型自主修改 → 獨立驗證 → 提交 → Draft PR」已完成一次任務驗收**，成果為 [APEE PR #1](https://github.com/irons163/APEE/pull/1)。較早的 [codex-pool-manager PR #9](https://github.com/irons163/codex-pool-manager/pull/9) 保留為外部修補驗證與交付的證據。
 

@@ -4,10 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apee"
-version = "1.0.0"
+version = "1.0.1"
 description = "A local engine for GitHub development tasks and verified review handoffs"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [{name = "irons163"}]
 requires-python = ">=3.9"
 dependencies = []
+
+[project.urls]
+Repository = "https://github.com/irons163/APEE"
+Issues = "https://github.com/irons163/APEE/issues"
 
 [project.scripts]
 apee = "apee.cli:main"

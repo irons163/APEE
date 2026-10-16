@@ -2,18 +2,52 @@ import SwiftUI
 import AppKit
 import UserNotifications
 
-struct Backend: Decodable {
+struct Backend: Codable {
     let python: String
     let root: String
     let config: String
     let environment: [String: String]
+    var bootstrap: String? = nil
+
+    static func load() throws -> Backend {
+        if let resources = Bundle.main.resourceURL,
+           FileManager.default.fileExists(atPath: resources.appendingPathComponent("portable.json").path) {
+            let process = Process()
+            process.executableURL = resources.appendingPathComponent("python/bin/python3")
+            process.arguments = ["-I", "-B", resources.appendingPathComponent("backend/apee/portable.py").path,
+                                 "describe", Bundle.main.bundlePath]
+            let allowed = Set(["HOME", "USER", "LOGNAME", "SHELL", "PATH", "TMPDIR", "LANG", "LC_ALL",
+                               "CODEX_HOME", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "APEE_INSTANCE_ROOT"])
+            process.environment = ProcessInfo.processInfo.environment.filter { allowed.contains($0.key) }
+            process.standardInput = FileHandle.nullDevice
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardError = output
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                throw NSError(domain: "APEE", code: Int(process.terminationStatus), userInfo: [
+                    NSLocalizedDescriptionKey: String(decoding: data, as: UTF8.self)])
+            }
+            return try JSONDecoder().decode(Backend.self, from: data)
+        }
+        guard let url = Bundle.main.url(forResource: "backend", withExtension: "json") else {
+            throw NSError(domain: "APEE", code: 1, userInfo: [NSLocalizedDescriptionKey: "缺少 app 執行設定。"])
+        }
+        return try JSONDecoder().decode(Backend.self, from: Data(contentsOf: url))
+    }
 
     func run(_ arguments: [String]) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: python)
         process.currentDirectoryURL = URL(fileURLWithPath: root)
         process.environment = environment
-        process.arguments = ["-B", "-m", "apee", "--config", config] + arguments
+        if let bootstrap = bootstrap {
+            process.arguments = ["-I", "-B", bootstrap, "run", config] + arguments
+        } else {
+            process.arguments = ["-B", "-m", "apee", "--config", config] + arguments
+        }
         process.standardInput = FileHandle.nullDevice
         let output = Pipe()
         process.standardOutput = output
@@ -39,13 +73,31 @@ final class DashboardModel: ObservableObject {
     @Published var busy = false
     @Published var message = ""
     @Published var error = false
-    private let backend: Backend?
+    private var backend: Backend?
+    private var startupError: String?
 
     init() {
-        backend = Bundle.main.url(forResource: "backend", withExtension: "json")
-            .flatMap { try? Data(contentsOf: $0) }
-            .flatMap { try? JSONDecoder().decode(Backend.self, from: $0) }
-        refresh()
+        // Process.waitUntilExit may service a run loop. Keep bundle bootstrap
+        // outside SwiftUI's initial view graph construction on the main thread.
+        busy = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let resolved = try Backend.load()
+                DispatchQueue.main.async {
+                    self.backend = resolved
+                    self.busy = false
+                    self.refresh()
+                }
+            } catch {
+                let failure = error.localizedDescription
+                DispatchQueue.main.async {
+                    self.startupError = failure
+                    self.message = failure
+                    self.error = true
+                    self.busy = false
+                }
+            }
+        }
     }
 
     var tasks: [[String: Any]] { data["tasks"] as? [[String: Any]] ?? [] }
@@ -82,7 +134,7 @@ final class DashboardModel: ObservableObject {
 
     private func perform(_ args: [String], snapshot: Bool, success: String = "", completed: (() -> Void)? = nil) {
         guard let backend = backend else {
-            message = "無法讀取這份 app 的執行設定。"
+            message = startupError ?? "無法讀取這份 app 的執行設定。"
             error = true
             return
         }
@@ -1048,6 +1100,7 @@ struct WorkflowPanel: View {
     @State private var interval = 300
     @State private var serviceTasks = 1
     @State private var permission = "檢查中"
+    @State private var codexPath = "codex"
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -1108,9 +1161,23 @@ struct WorkflowPanel: View {
     var servicePanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("背景服務").font(.headline)
+            TextField("Codex CLI 執行檔名稱或絕對路徑", text: $codexPath).textFieldStyle(.roundedBorder)
+            HStack {
+                Button("選擇 CLI 執行檔") {
+                    let panel = NSOpenPanel()
+                    panel.canChooseDirectories = false
+                    panel.allowsMultipleSelection = false
+                    panel.begin { response in
+                        if response == .OK, let url = panel.url { codexPath = url.path }
+                    }
+                }
+                Button("儲存 CLI 路徑") { model.save(["codex": codexPath.trimmingCharacters(in: .whitespacesAndNewlines)]) }
+            }.disabled(model.busy)
+            Text("從 Finder 開啟時可能找不到終端機的工具路徑。可選擇已安裝的 Codex CLI；變更後先檢查工具，已有服務時重新安裝以更新環境。").font(.caption).foregroundStyle(.secondary)
             Stepper("每 \(interval) 秒檢查一輪", value: $interval, in: 60...86400, step: 60)
             Stepper("每次喚醒最多開始 \(serviceTasks) 次開發嘗試", value: $serviceTasks, in: 1...20)
             HStack {
+                Button("檢查工具與登入") { model.command(["doctor"], success: "工具、登入與必要 Codex 介面檢查通過。") }
                 Button(model.service["installed"] as? Bool == true ? "更新服務設定" : "安裝背景服務") {
                     model.command(["service", "install", "--interval", String(interval), "--max-tasks", String(serviceTasks)])
                 }
@@ -1129,6 +1196,7 @@ struct WorkflowPanel: View {
         }
     }
     func load() {
+        codexPath = model.data["codex"] as? String ?? "codex"
         let q = model.data["quality"] as? [String: Any] ?? [:]
         quality = q["enabled"] as? Bool ?? false; repairs = q["max_repairs"] as? Int ?? 1
         let c = model.data["ci_repair"] as? [String: Any] ?? [:]
@@ -1199,13 +1267,12 @@ final class NotificationAgent: NSObject, UNUserNotificationCenterDelegate {
 struct APEEApp: App {
     init() {
         UNUserNotificationCenter.current().delegate = NotificationAgent.shared
-        if CommandLine.arguments.contains("--diagnose") || CommandLine.arguments.contains("--deliver-notifications") || CommandLine.arguments.contains("--notification-status") {
+        if CommandLine.arguments.contains("--diagnose") || CommandLine.arguments.contains("--backend-info") || CommandLine.arguments.contains("--deliver-notifications") || CommandLine.arguments.contains("--notification-status") {
             do {
-                guard let url = Bundle.main.url(forResource: "backend", withExtension: "json") else {
-                    throw NSError(domain: "APEE", code: 1, userInfo: [NSLocalizedDescriptionKey: "missing backend"])
-                }
-                let backend = try JSONDecoder().decode(Backend.self, from: Data(contentsOf: url))
-                if CommandLine.arguments.contains("--deliver-notifications") {
+                let backend = try Backend.load()
+                if CommandLine.arguments.contains("--backend-info") {
+                    print(String(decoding: try JSONEncoder().encode(backend), as: UTF8.self))
+                } else if CommandLine.arguments.contains("--deliver-notifications") {
                     try NotificationAgent.shared.deliver(backend)
                 } else if CommandLine.arguments.contains("--notification-status") {
                     print(String(decoding: try JSONSerialization.data(withJSONObject: NotificationAgent.shared.status()), as: UTF8.self))

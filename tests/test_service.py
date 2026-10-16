@@ -33,9 +33,9 @@ class FakeLaunchd:
             if self.fail == "auth" and "auth" in args:
                 raise ApeeError("fixture-secret must not be echoed")
             if "sandbox" in args:
-                return "--permission-profile"
+                return "--permission-profile --include-managed-config"
             if "exec" in args:
-                return "--ignore-user-config"
+                return "--ignore-user-config --output-schema --output-last-message"
             return "tool 1.0"
         if args[0] != "/bin/launchctl":
             raise AssertionError(args)
